@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<title>임상실습 배치 관리 · 로그인</title>
+<title>KBC Nursing MediMath · 로그인</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+KR:wght@400;500;600;700&family=Nanum+Myeongjo:wght@700;800&display=swap">
 <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
@@ -13,8 +13,8 @@
 <div class="login-wrap">
   <form class="login" method="post" action="/login">
     <div>
-      <h1 style="font-size:24px">임상실습 배치 관리</h1>
-      <div class="sub">간호학과 · 관계자 전용</div>
+      <h1 style="font-size:24px">KBC Nursing MediMath</h1>
+      <div class="sub">간호학과 임상실습 배치 관리 · 관계자 전용</div>
     </div>
     {% if error %}<div class="errbox" role="alert">{{ error }}</div>{% endif %}
     {% if not has_users %}<div class="errbox" role="alert">아직 계정이 없습니다. 배포 설정에서 INIT_ACCOUNTS와 INIT_PASSWORD를 넣고 다시 시작하면 직위별 계정이 만들어집니다.</div>{% endif %}

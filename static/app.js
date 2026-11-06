@@ -1,5 +1,5 @@
 'use strict';
-/* 임상실습 배치 관리 — 화면 */
+/* KBC Nursing MediMath — 임상실습 배치 관리 화면 */
 const $=s=>document.querySelector(s);
 const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const S={students:[],institutions:[],terms:[],placements:[],weights:{...DEFAULT_W},users:[]};

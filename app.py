@@ -1,4 +1,4 @@
-"""간호학과 임상실습 배치 관리 서버.
+"""KBC Nursing MediMath — 간호학과 임상실습 배치 관리 서버.
 
 - 데이터: SQLite (DATA_DIR/clinic.db). Railway에서는 Volume을 DATA_DIR에 연결한다.
 - 접근: 학부장, 임상산학학과장, 임상실습주임교수, 임상실습행정직원 계정만 로그인할 수 있다.
