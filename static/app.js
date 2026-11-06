@@ -72,7 +72,7 @@ async function boot(){
   pickPlaceTerm();refreshDup();renderAll();
 }
 function forcePw(){
-  document.querySelector('nav.tabs').hidden=true;['history','place','students','insts','terms','users'].forEach(t=>$('#tab-'+t).hidden=true);
+  document.querySelector('nav.tabs').hidden=true;['history','place','students','insts','terms','users','help'].forEach(t=>$('#tab-'+t).hidden=true);
   const box=document.createElement('section');box.className='panel stack';box.style.maxWidth='460px';
   box.innerHTML=`<h2>새 비밀번호를 정하세요</h2><p class="hint">${esc(S.me.name)}(${esc(S.me.role)}) 계정의 첫 로그인입니다. 받은 처음 비밀번호를 본인만 아는 비밀번호로 바꿔야 쓸 수 있습니다.</p>
     <form id="fpw" class="stack"><label for="fp-cur" class="hint">처음 비밀번호<input id="fp-cur" type="password" autocomplete="current-password" required></label>
@@ -84,11 +84,11 @@ function forcePw(){
     const j=await act(()=>api('PUT','/api/me/password',{current:$('#fp-cur').value,new:$('#fp-new').value}),'비밀번호를 바꿨습니다.');
     if(j){box.remove();document.querySelector('nav.tabs').hidden=false;S.me.must_change=0;document.querySelector('[data-tab=history]').click();boot();}};
 }
-function renderAll(){renderCohortBar();renderHistory();renderPlace();renderStudents();renderInsts();renderTerms();renderUsers();}
+function renderAll(){renderHelp();renderCohortBar();renderHistory();renderPlace();renderStudents();renderInsts();renderTerms();renderUsers();}
 document.querySelectorAll('[role=tab]').forEach(b=>b.onclick=()=>{
   ui.tab=b.dataset.tab;
   document.querySelectorAll('[role=tab]').forEach(x=>x.setAttribute('aria-selected',x===b));
-  ['history','place','students','insts','terms','users'].forEach(t=>$('#tab-'+t).hidden=t!==ui.tab);
+  ['history','place','students','insts','terms','users','help'].forEach(t=>$('#tab-'+t).hidden=t!==ui.tab);
 });
 $('#btnMyPw').onclick=async()=>{
   const cur=prompt('지금 비밀번호');if(cur==null)return;
@@ -765,4 +765,60 @@ function renderUsers(){
     const j=await act(()=>api('DELETE',`/api/users/${u.id}`),`${u.name} 계정을 지웠습니다.`);if(j){S.users=j.users;renderUsers();}});
 }
 
+/* ---------- 사용 설명서 ---------- */
+function renderHelp(){
+  const el=$('#tab-help');if(!el||el.dataset.done)return;el.dataset.done='1';
+  const img=(f,alt)=>`<figure><img src="/static/help/${f}" alt="${alt}" loading="lazy"><figcaption>${alt}</figcaption></figure>`;
+  const role=S.me?S.me.role:'';
+  el.innerHTML=`<div class="panel stack">
+    <h2>사용 설명서</h2>
+    <p class="hint">한 학기 배치는 <b>학년도 고르기 → 학생 명단 → 지난 학기 이력 → 실습 계획 → 자동 배치 → 승인</b> 순서로 합니다. 화면 그림은 가상의 학생으로 만든 예시입니다.${role?` 지금 로그인한 직위: <b>${esc(role)}</b>.`:''}</p>
+    <ol class="help-toc">
+      <li><a href="#h1">로그인과 학년도 고르기</a></li><li><a href="#h2">학생 명단</a></li><li><a href="#h3">학기·이력 가져오기</a></li><li><a href="#h4">기관·병동과 실습 계획</a></li>
+      <li><a href="#h5">자동 배치 (제외 기간·지정 배치)</a></li><li><a href="#h6">승인</a></li><li><a href="#h7">학생별 실습 이력</a></li><li><a href="#h8">계정 관리</a></li><li><a href="#h9">자주 묻는 것</a></li>
+    </ol>
+  </div>
+  <div class="panel stack" id="h1"><h2>1. 로그인과 학년도 고르기</h2>
+    <ol><li>직위 아이디(dean · chair · professor · staff)로 로그인합니다. 처음이면 새 비밀번호를 정해야 합니다.</li>
+    <li>맨 위 막대에서 <b>학년도</b>와 <b>3학년/4학년</b>을 고릅니다. 아래 모든 탭이 그 기수 기준으로 바뀝니다.<br><span class="hint">예: 2027학년도 4학년 = 2026년 3학년 기수(2026년 3-1·3-2 이력 + 2027년 4-1)</span></li>
+    <li>아직 없는 기수는 <b>‘○○년 3학년 기수 만들기’</b>를 누르면 3-1·3-2·4-1 학기가 함께 만들어집니다.</li></ol>
+    ${img('01_login.png','로그인 화면')}${img('02_history.png','학년도·학년 선택과 학생별 실습 이력')}</div>
+  <div class="panel stack" id="h2"><h2>2. 학생 명단</h2>
+    <ol><li>‘학생 명단’ 탭의 점선 상자에 엑셀을 끌어다 놓습니다. 학사 시스템의 재학생 명단(.xls)도 그대로 됩니다(성적은 백분위, 나이는 주민번호 앞자리로 계산).</li>
+    <li>같은 학번이 있으면 내용을 새로 고칩니다. 다른 학년 명단에 있는 학번은 건너뜁니다.</li>
+    <li>표에서 바로 고치면 저장됩니다. 맨 끝 <b>참고</b> 칸에 복학·예방접종 등 필요한 내용을 적습니다.</li></ol>
+    ${img('03_students.png','학생 명단: 엑셀 올리기, 한 명씩 추가, 참고 칸')}</div>
+  <div class="panel stack" id="h3"><h2>3. 학기·이력 가져오기</h2>
+    <ol><li>지난 학기 배치표 엑셀을 그 학기 칸의 <b>[엑셀에서 이력 가져오기]</b>로 올립니다.</li>
+    <li>학기 열이 있는 파일(예: 배치이력 검토표)은 3-1·3-2가 한 번에 나뉘어 들어갑니다.</li>
+    <li>학기마다 2주 단위 기간(예: 1월, 04/12-04/23 …)을 적어 둡니다. 맨 아래에서 전체 데이터 백업을 받을 수 있습니다.</li></ol>
+    ${img('04_terms.png','학기별 기간과 이력 가져오기')}</div>
+  <div class="panel stack" id="h4"><h2>4. 기관·병동과 실습 계획</h2>
+    <ol><li><b>[계획 양식 받기]</b>로 받은 엑셀에 학기별 기간(기간 시트)과 교과목·기관·병동·정원(기관 시트)을 적어 <b>[계획 엑셀 올리기]</b>로 올립니다. 그 학기의 교과목과 기관이 파일 내용으로 바뀝니다.</li>
+    <li>교과목마다 <b>2주 단위 수</b>(성인 4주 = 2)와 <b>연속</b>(같은 병원에서 연달아) 여부를 정합니다.</li>
+    <li>기관 카드에서 정원, 성적 우선·여학생만·지역·만학도 우선, 지역 키워드, 병동을 바로 고칩니다. 병동이 없으면 기관 단위까지만 배치합니다.</li></ol>
+    ${img('05_insts.png','학기별 교과목과 기관·정원')}</div>
+  <div class="panel stack" id="h5"><h2>5. 자동 배치</h2>
+    <ol><li>‘자동 배치’ 탭에서 <b>배치할 학기</b>를 고릅니다. 앞선 학기 이력이 자동으로 반영됩니다.</li>
+    <li><b>배치 제외 기간</b>: 교직실습처럼 병원에 갈 수 없는 학생의 이름을 붙여넣고 기간을 체크합니다.</li>
+    <li><b>지정 배치</b>: 반드시 정해진 기간·기관에 가야 하는 학생(예: 교직실습 학생 → 1월 아주대학교병원)을 넣습니다.</li>
+    <li><b>[배치 실행]</b> → 학생별·기관별·점검을 확인합니다. 마음에 들지 않으면 <b>[다른 조합 보기]</b>나 배치 기준 점수를 바꿔 다시 돌립니다.</li>
+    <li><b>[이 학기 배치로 저장]</b>해야 이력에 남습니다. <b>[엑셀로 저장]</b>으로 배치표를 받을 수 있습니다.</li></ol>
+    ${img('06_place_setup.png','배치할 학기, 승인 상태, 제외 기간·지정 배치')}${img('07_place_result.png','배치 결과(학생별): 이전 학기 이력과 이번 배치')}${img('08_check.png','점검: 지켜진 조건과 확인할 것')}</div>
+  <div class="panel stack" id="h6"><h2>6. 승인</h2>
+    <ol><li><b>임상실습주임교수</b>가 배치를 저장한 뒤 ‘승인’ 칸의 <b>[승인 요청]</b>을 누릅니다.</li>
+    <li><b>임상산학학과장</b>이 검토 후 <b>[승인]</b> 또는 <b>[반려]</b>(사유 필수)를 누릅니다.</li>
+    <li>승인된 배치를 다시 저장하면 ‘작성 중’으로 돌아가 다시 승인을 받아야 합니다. 처리 기록이 남습니다.</li></ol>
+    ${img('09_approval.png','임상산학학과장 화면: 승인·반려')}</div>
+  <div class="panel stack" id="h7"><h2>7. 학생별 실습 이력</h2>
+    <p>학생 한 줄에 3-1·3-2·4-1이 나란히 보입니다. <span class="badge bad">같은 병동 재배치</span>는 빨간 테두리, <span class="badge warn">같은 기관·다른 병동</span>은 주황 테두리입니다. 학기 제목 옆에 승인 상태가 표시되고, 엑셀로 저장할 수 있습니다.</p></div>
+  <div class="panel stack" id="h8"><h2>8. 계정 관리</h2>
+    <p>학부장·임상산학학과장·임상실습주임교수가 계정을 추가·삭제하고 이름과 직위를 고칩니다. <b>발령으로 사람이 바뀌면</b> 그 직위 계정의 이름을 고치고 <b>[비밀번호 초기화]</b>를 합니다. 새 분은 첫 로그인 때 비밀번호를 다시 정합니다.</p>
+    ${img('10_users.png','계정 관리')}</div>
+  <div class="panel stack" id="h9"><h2>9. 자주 묻는 것</h2>
+    <ul><li><b>새 기능이 안 보여요</b> → 새로고침(Ctrl + F5, 맥은 Cmd + Shift + R).</li>
+    <li><b>학생이 배치되지 않았어요</b> → 점검 보기에서 이유를 봅니다. 대부분 그 과목·기간의 정원 부족입니다.</li>
+    <li><b>같은 기관에 또 갔어요</b> → 병동이 다르면 허용됩니다. 줄이려면 배치 기준 점수의 ‘이전 기관 감점’을 높입니다.</li>
+    <li><b>비밀번호를 잊었어요</b> → 학부장·학과장·주임교수에게 비밀번호 초기화를 요청합니다.</li></ul></div>`;
+}
 boot();

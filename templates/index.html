@@ -31,6 +31,7 @@
     <button role="tab" data-tab="insts" aria-selected="false" type="button">기관·병동</button>
     <button role="tab" data-tab="terms" aria-selected="false" type="button">학기·이력 가져오기</button>
     <button role="tab" data-tab="users" aria-selected="false" type="button" id="tabUsers" hidden>계정 관리</button>
+    <button role="tab" data-tab="help" aria-selected="false" type="button">사용 설명서</button>
   </nav>
   <section id="tab-history" class="stack"><div class="panel empty">불러오는 중…</div></section>
   <section id="tab-place" class="stack" hidden></section>
@@ -38,6 +39,7 @@
   <section id="tab-insts" class="stack" hidden></section>
   <section id="tab-terms" class="stack" hidden></section>
   <section id="tab-users" class="stack" hidden></section>
+  <section id="tab-help" class="stack help" hidden></section>
 </div>
 <div id="toast" class="toast" hidden></div>
 <script src="{{ url_for('static', filename='engine.js', v=v) }}"></script>

@@ -170,3 +170,12 @@ select{font:inherit;font-size:13px;border:1px solid var(--line);border-radius:5p
 .cohort-desc{font-size:13px;color:var(--muted);min-width:0}
 .cohort-desc b{color:var(--ink)}
 .tag.pin{border-color:color-mix(in srgb,var(--accent) 60%,transparent);color:var(--accent);font-weight:600}
+
+.help ol,.help ul{margin:0;padding-left:22px;display:flex;flex-direction:column;gap:6px;max-width:80ch}
+.help figure{margin:8px 0 0;border:1px solid var(--line);border-radius:10px;overflow:hidden;background:var(--sunk)}
+.help figure img{display:block;width:100%;height:auto}
+.help figcaption{font-size:12px;color:var(--muted);padding:6px 10px;border-top:1px solid var(--line)}
+.help-toc{columns:2;column-gap:32px;display:block!important}
+.help-toc li{margin-bottom:4px}
+.help a{color:var(--accent)}
+@media (max-width:640px){.help-toc{columns:1}}
