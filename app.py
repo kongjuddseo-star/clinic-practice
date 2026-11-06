@@ -49,6 +49,34 @@ def _secret_key():
 
 
 app = Flask(__name__)
+
+
+def _asset_version():
+    """화면 파일 내용으로 만든 버전값. 배포하면 바뀌므로 브라우저가 새 파일을 받는다."""
+    import hashlib
+    h = hashlib.md5()
+    for name in ("app.js", "engine.js", "style.css"):
+        try:
+            with open(os.path.join(BASE_DIR, "static", name), "rb") as f:
+                h.update(f.read())
+        except OSError:
+            pass
+    return h.hexdigest()[:10]
+
+
+ASSET_VER = _asset_version()
+
+
+@app.context_processor
+def _inject_ver():
+    return {"v": ASSET_VER}
+
+
+@app.after_request
+def _no_cache_pages(resp):
+    if resp.mimetype == "text/html":
+        resp.headers["Cache-Control"] = "no-store"
+    return resp
 app.secret_key = _secret_key()
 app.config.update(
     SESSION_COOKIE_HTTPONLY=True,
