@@ -208,12 +208,22 @@ def init_db():
         cols = [r[1] for r in con.execute("PRAGMA table_info(users)")]
         if "must_change" not in cols:
             con.execute("ALTER TABLE users ADD COLUMN must_change INTEGER NOT NULL DEFAULT 0")
+        if "init_pw" not in cols:  # 처음 비밀번호를 아직 그대로 쓰는 계정 표시
+            con.execute("ALTER TABLE users ADD COLUMN init_pw INTEGER NOT NULL DEFAULT 0")
+            con.execute("UPDATE users SET init_pw=1 WHERE must_change=1")
         for old, new in ROLE_RENAMES.items():
             con.execute("UPDATE users SET role=? WHERE role=?", (new, old))
         if con.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 0:
             for login, role, name, pw in initial_accounts():
-                con.execute("INSERT INTO users(login_id,name,role,pw_hash,must_change) VALUES(?,?,?,?,1)",
+                con.execute("INSERT INTO users(login_id,name,role,pw_hash,must_change,init_pw) VALUES(?,?,?,?,1,1)",
                             (login, name, role, generate_password_hash(pw)))
+        else:
+            # 처음 비밀번호를 아직 바꾸지 않은 계정은 지금의 INIT_PASSWORD를 따른다
+            pw = os.environ.get("INIT_PASSWORD")
+            if pw:
+                for uid, h in con.execute("SELECT id,pw_hash FROM users WHERE init_pw=1").fetchall():
+                    if not check_password_hash(h, pw):
+                        con.execute("UPDATE users SET pw_hash=?,must_change=1 WHERE id=?", (generate_password_hash(pw), uid))
         con.execute("COMMIT")
     finally:
         con.close()
@@ -805,6 +815,7 @@ def user_update(uid):
         except ValueError as e:
             return err(str(e))
         sets.append("pw_hash=?"); vals.append(generate_password_hash(b["password"]))
+        sets.append("init_pw=0")
         if uid != g.user["id"]:
             sets.append("must_change=1")
     if not sets:
@@ -839,7 +850,7 @@ def my_password():
         return err(str(e))
     if b.get("new") == b.get("current"):
         return err("지금과 다른 비밀번호를 쓰세요.")
-    db().execute("UPDATE users SET pw_hash=?,must_change=0 WHERE id=?", (generate_password_hash(b["new"]), g.user["id"]))
+    db().execute("UPDATE users SET pw_hash=?,must_change=0,init_pw=0 WHERE id=?", (generate_password_hash(b["new"]), g.user["id"]))
     db().commit()
     return jsonify(ok=True)
 
