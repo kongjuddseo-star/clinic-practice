@@ -257,7 +257,7 @@ function studentView(r){
   const body=rows.map(({s,k})=>{
     const hc=r.histTerms.map((t,ti)=>{const hs=s.hist.filter(h=>h.termId===t.id).sort((a,b)=>a.seq-b.seq);return Array.from({length:TC[ti].n},(_,i)=>{const h=hs[i];
       return `<td class="${i===0?'gstart':''}">${h?`<span class="chip ${cClass(h.course)}"><b>${esc(cShort(h.course))}</b>${esc(shortInst(h.inst))}<small>${esc(h.ward)}</small></span>`:'<span class="t-empty">–</span>'}</td>`;}).join('');}).join('');
-    const cells=slots[k].map((x,i)=>`<td class="${i===0?'gstart':''}">`+(x?`<span class="chip ${cClass(courseOf(x.course).label)}${x.prev?' prev':''}"${x.prev?' title="이전 학기와 같은 기관(다른 병동)"':''}><b>${courseOf(x.course).short}</b>${esc(x.inst.short)}<small>${esc(x.dept)}</small></span>`:'<span class="chip c-none">미배치</span>')+'</td>').join('');
+    const cells=slots[k].map((x,i)=>`<td class="${i===0?'gstart':''}">`+(x?`<span class="chip ${cClass(courseOf(x.course).label)}${x.prev?' prev':''}"${x.prev?' title="이전 학기와 같은 기관(다른 병동)"':''}><b>${courseOf(x.course).short}</b>${esc(x.inst.short)}<small>${esc(x.dept)}</small></span>`:'')+'</td>').join('');
     const tags=[];const seen=new Set();slots[k].forEach(x=>{if(!x)return;x.tags.forEach(t=>{const key=courseOf(x.course).short+t[1];if(t[0]==='fem'||seen.has(key))return;seen.add(key);tags.push([t[0],courseOf(x.course).short+' · '+t[1]]);});});
     return `<tr><td class="who"><div style="font-weight:600;white-space:nowrap">${disp(s)}</div><div class="mono" style="color:var(--muted);font-size:11.5px">${esc(s.id)}</div></td>
       <td class="info">${s.sex} · ${s.age}세<br>성적 <span class="mono">${s.gpa}</span> (${s.rank}위)<br><span title="${esc(s.addr)}">${esc(shortAddr(s.addr))}</span>${s.note?`<br><span style="color:var(--ink)">참고: ${esc(s.note)}</span>`:''}</td>${hc}${cells}<td style="min-width:180px">${tagHtml(tags)}</td></tr>`;}).join('');
@@ -294,7 +294,7 @@ function exportPlace(){
   const rows=st.map((s,k)=>({s,k})).sort((a,b)=>a.s.id.localeCompare(b.s.id,'ko',{numeric:true})).map(({s,k})=>{
     const tags=[...new Set(slots[k].filter(Boolean).flatMap(x=>x.tags.filter(t=>t[0]!=='fem').map(t=>courseOf(x.course).short+' '+t[1])))];
     return [s.id,disp(s,false),s.sex,s.gpa,s.rank,s.age,s.addr,s.note,...TC.flatMap(({t,n})=>{const hs=s.hist.filter(h=>h.termId===t.id).sort((a,b)=>a.seq-b.seq);return Array.from({length:n},(_,i)=>hs[i]?`${cShort(hs[i].course)} / ${hs[i].inst} / ${hs[i].ward}`:'');}),
-      ...slots[k].map(x=>x?`${courseOf(x.course).short} / ${x.inst.name} / ${x.dept}`:'미배치'),tags.join(', ')];});
+      ...slots[k].map(x=>x?`${courseOf(x.course).short} / ${x.inst.name} / ${x.dept}`:''),tags.join(', ')];});
   const ws=XLSX.utils.aoa_to_sheet([head,...rows]);ws['!cols']=head.map(h=>({wch:/기간|차$/.test(h)?32:h==='반영된 조건'?40:h==='주소'||h==='참고'?22:10}));
   XLSX.utils.book_append_sheet(wb,ws,'학생별 배치');
   const PI=[...P.keys()];
