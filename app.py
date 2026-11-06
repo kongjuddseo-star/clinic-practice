@@ -111,6 +111,11 @@ CREATE TABLE IF NOT EXISTS exclusions(
   id INTEGER PRIMARY KEY, term_id INTEGER NOT NULL REFERENCES terms(id) ON DELETE CASCADE,
   student_id INTEGER NOT NULL REFERENCES students(id) ON DELETE CASCADE,
   periods TEXT NOT NULL DEFAULT '[]', reason TEXT NOT NULL DEFAULT '', UNIQUE(term_id, student_id));
+CREATE TABLE IF NOT EXISTS pins(
+  id INTEGER PRIMARY KEY, term_id INTEGER NOT NULL REFERENCES terms(id) ON DELETE CASCADE,
+  student_id INTEGER NOT NULL REFERENCES students(id) ON DELETE CASCADE,
+  institution_id INTEGER NOT NULL REFERENCES institutions(id) ON DELETE CASCADE,
+  period INTEGER NOT NULL, reason TEXT NOT NULL DEFAULT '', UNIQUE(term_id, student_id, period));
 CREATE TABLE IF NOT EXISTS term_log(
   id INTEGER PRIMARY KEY, term_id INTEGER NOT NULL REFERENCES terms(id) ON DELETE CASCADE,
   action TEXT NOT NULL, user_name TEXT NOT NULL DEFAULT '', role TEXT NOT NULL DEFAULT '', note TEXT NOT NULL DEFAULT '',
@@ -701,6 +706,41 @@ def exclusion_add(tid):
     return jsonify(ok=True, exclusions=exclusions_payload())
 
 
+# ---- 지정 배치: 이 학생은 이 기간에 이 기관 (예: 교직실습 학생은 1월 아주대학교병원)
+def pins_payload():
+    return [dict(r) for r in db().execute("SELECT * FROM pins ORDER BY term_id,id")]
+
+
+@app.post("/api/terms/<int:tid>/pins")
+@login_required
+def pin_add(tid):
+    b = body()
+    ids = [to_int(x) for x in (b.get("student_ids") or []) if to_int(x)]
+    iid, period = to_int(b.get("institution_id")), to_int(b.get("period"))
+    if not ids:
+        return err("학생을 고르세요.")
+    ok = db().execute("SELECT 1 FROM institutions i JOIN courses c ON c.id=i.course_id WHERE i.id=? AND c.term_id=?", (iid, tid)).fetchone()
+    if not ok:
+        return err("이 학기의 기관을 고르세요.")
+    if period is None or not 0 <= period < MAXP:
+        return err("기간을 고르세요.")
+    reason = str(b.get("reason") or "").strip()
+    for sid in ids:
+        db().execute("INSERT INTO pins(term_id,student_id,institution_id,period,reason) VALUES(?,?,?,?,?) "
+                     "ON CONFLICT(term_id,student_id,period) DO UPDATE SET institution_id=excluded.institution_id,reason=excluded.reason",
+                     (tid, sid, iid, period, reason))
+    db().commit()
+    return jsonify(ok=True, pins=pins_payload())
+
+
+@app.delete("/api/pins/<int:pid>")
+@login_required
+def pin_delete(pid):
+    db().execute("DELETE FROM pins WHERE id=?", (pid,))
+    db().commit()
+    return jsonify(ok=True, pins=pins_payload())
+
+
 @app.delete("/api/exclusions/<int:eid>")
 @login_required
 def exclusion_delete(eid):
@@ -735,6 +775,7 @@ def bootstrap():
         "cohorts": cohorts_payload(),
         "courses": courses_payload(),
         "exclusions": exclusions_payload(),
+        "pins": pins_payload(),
         "termLog": term_log_payload(),
         "students": [dict(r) for r in db().execute("SELECT * FROM students ORDER BY student_no")],
         "terms": terms_payload(),

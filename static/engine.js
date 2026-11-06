@@ -90,14 +90,15 @@ function patRes(pat,courses){const r=[];pat.asg.forEach((ps,ci)=>{if(!ps)return;
 /* 학생마다 쓸 수 있는 일정 패턴을 정해 인원을 배분한다. 제외 기간(교직실습 등)이 있는 학생부터 고른다 */
 function choosePatternCounts(pats,R,st,rng){
   const P=pats.length,n=st.length,res=pats.map(p=>p.res);
-  const okFor=st.map(s=>{const b=s.blocked;return pats.map(p=>!b||!b.size||p.asg.every(ps=>!ps||ps.every(q=>!b.has(q))));});
+  const okFor=st.map(s=>{const b=s.blocked,pins=s._pins||[];return pats.map(p=>(!b||!b.size||p.asg.every(ps=>!ps||ps.every(q=>!b.has(q))))&&pins.every(x=>p.asg[x.ci]&&p.asg[x.ci].includes(x.p)));});
   const fits=(rem,i)=>res[i].every(r=>rem[r]>0);
   const slack=(rem,i)=>Math.min(...res[i].map(r=>R[r]?rem[r]/R[r]:0));
   const F=[...Array(P).keys()].filter(i=>pats[i].full),Pp=[...Array(P).keys()].filter(i=>!pats[i].full).sort((a,b)=>pats[b].units-pats[a].units);
   const base=[...Array(n).keys()];
   let best=null;
   for(let t=0;t<60;t++){
-    const order=base.slice().sort((a,b)=>((st[b].blocked&&st[b].blocked.size)||0)-((st[a].blocked&&st[a].blocked.size)||0)||(t?rng()-0.5:0));
+    const hard=k=>((st[k].blocked&&st[k].blocked.size)||0)+((st[k]._pins||[]).length*10);
+    const order=base.slice().sort((a,b)=>hard(b)-hard(a)||(t?rng()-0.5:0));
     const rem={...R},asg=new Array(n).fill(-1);
     const take=(k,i)=>{res[i].forEach(r=>rem[r]--);asg[k]=i;},drop=k=>{res[asg[k]].forEach(r=>rem[r]++);asg[k]=-1;};
     for(const k of order){let bi=-1,bv=-1;for(const i of F){if(!okFor[k][i]||!fits(rem,i))continue;const v=slack(rem,i)+rng()*(t?0.05:0);if(v>bv){bv=v;bi=i;}}if(bi>=0)take(k,bi);}
@@ -138,7 +139,9 @@ function computePlacement(students,cfg,seed){
     if(c.consec){for(let s=0;s+c.units<=N;s+=c.units)R[ci+':b'+s]=instsOf(ci).reduce((a,i)=>{let m=Infinity;for(let k=0;k<c.units;k++)m=Math.min(m,cap(i,s+k));return a+m;},0);}
     else for(let p=0;p<N;p++)R[ci+':p'+p]=instsOf(ci).reduce((a,i)=>a+cap(i,p),0);});
   const pats=enumPatterns(courses,N);pats.forEach(p=>p.res=patRes(p,courses));
-  st.forEach(s=>{s.blocked=s.blocked instanceof Set?s.blocked:new Set(s.blocked||[]);});
+  st.forEach(s=>{s.blocked=s.blocked instanceof Set?s.blocked:new Set(s.blocked||[]);
+    s._pins=(s.pins||[]).map(x=>{const inst=insts.find(i=>i.id===x.inst);if(!inst||x.p<0||x.p>=N)return null;return {inst,p:x.p,ci:courses.findIndex(c=>c.key===inst.course),reason:x.reason||''};}).filter(Boolean);
+    s._pins.forEach(x=>s.blocked.delete(x.p));});
   const {cnt,okFor}=pats.length?choosePatternCounts(pats,R,st,rng):{cnt:[],okFor:[]};
 
   /* ② 학생 → 패턴: 학생에게 유리한 기간 조합(예: 지역 기관에 자리가 있는 기간)을 고르도록 */
@@ -159,13 +162,20 @@ function computePlacement(students,cfg,seed){
   /* ③ 과목별 기관 배정 */
   const slots=st.map(()=>new Array(N).fill(null));
   const usedCap=new Map();const uc=(i,p)=>(usedCap.get(i)||[])[p]||0;const addUc=(i,p)=>{if(!usedCap.has(i))usedCap.set(i,new Array(N).fill(0));usedCap.get(i)[p]++;};
+  /* 지정 배치를 먼저 넣는다 (예: 교직실습 학생은 1월 아주대학교병원) */
+  const pinConflict=[];
+  st.forEach((s,k)=>{const pt=pOf[k];if(!pt)return;s._pins.forEach(x=>{const ps=pt.asg[x.ci];if(!ps||!ps.includes(x.p))return;const c=courses[x.ci];
+    const r=scoreFor(s,x.inst,w,needOf(x.ci,x.inst));if(!r)pinConflict.push(k);
+    const tags=[['pin','지정 배치'+(x.reason?'('+x.reason+')':'')],...((r&&r.tags)||[]).filter(t=>t[0]!=='grade')];
+    const qs=c.consec?ps:[x.p];
+    qs.forEach(q=>{slots[k][q]={course:c.key,ci:x.ci,inst:x.inst,dept:null,tags,addrMatch:!!(r&&r.addrMatch),prev:!!(s._prev&&s._prev.has(x.inst)),consec:!!c.consec,pinned:true};addUc(x.inst,q);});});});
   courses.forEach((c,ci)=>{
     const I=instsOf(ci);
     if(c.consec){
       const nodes=[];let id=2+n;
       for(let s=0;s+c.units<=N;s+=c.units)I.forEach(i=>{let m=Infinity;for(let q=0;q<c.units;q++)m=Math.min(m,cap(i,s+q)-uc(i,s+q));if(m>0)nodes.push({i,s,m,node:id++});});
       const g=new MCF(id);const E=[];
-      st.forEach((s,k)=>{const ps=pOf[k]&&pOf[k].asg[ci];if(!ps)return;g.add(0,2+k,1,0);
+      st.forEach((s,k)=>{const ps=pOf[k]&&pOf[k].asg[ci];if(!ps||slots[k][ps[0]])return;g.add(0,2+k,1,0);
         nodes.forEach(x=>{if(x.s!==ps[0])return;const r=scoreFor(s,x.i,w,needOf(ci,x.i));if(!r)return;E.push({k,x,r,e:g.add(2+k,x.node,1,-(r.sc+jit()))});});});
       nodes.forEach(x=>g.add(x.node,1,x.m,0));g.run(0,1);
       E.forEach(({k,x,r,e})=>{if(e.cap!==0)return;for(let q=0;q<c.units;q++){slots[k][x.s+q]={course:c.key,ci,inst:x.i,dept:null,tags:r.tags,addrMatch:r.addrMatch,prev:!!(st[k]._prev&&st[k]._prev.has(x.i)),consec:true};addUc(x.i,x.s+q);}});
@@ -174,7 +184,7 @@ function computePlacement(students,cfg,seed){
         const nodes=[];let id=2+n;
         for(let p=0;p<N;p++)I.forEach(i=>{const m=cap(i,p)-uc(i,p);if(m>0)nodes.push({i,p,m,node:id++});});
         const g=new MCF(id);const E=[];
-        st.forEach((s,k)=>{const ps=pOf[k]&&pOf[k].asg[ci];if(!ps||ps.length<=u)return;const p=ps[u];g.add(0,2+k,1,0);
+        st.forEach((s,k)=>{const ps=pOf[k]&&pOf[k].asg[ci];if(!ps||ps.length<=u)return;const p=ps[u];if(slots[k][p])return;g.add(0,2+k,1,0);
           const before=ps.slice(0,u).map(q=>slots[k][q]).filter(Boolean).map(x=>x.inst);
           nodes.forEach(x=>{if(x.p!==p)return;
             if(before.includes(x.i)&&deptList(x.i).filter(d=>!isNoWard(d)).length<2&&!isNoWard(deptList(x.i)[0]))return;
@@ -209,6 +219,13 @@ function computePlacement(students,cfg,seed){
     if(have<need)issues.push({lv:'bad',msg:`${c.label} 자리가 ${have}석으로, 학생 ${n}명 × ${c.units}회 = ${need}석보다 ${need-have}석 부족합니다.`,detail:'기관·병동 탭에서 이 과목의 정원을 늘리거나 기관을 추가하세요.'});
     if(missing[ci].length)issues.push({lv:'bad',msg:`${c.label}을(를) 배치하지 못한 학생 ${missing[ci].length}명`,detail:missing[ci].slice(0,60).map(nm).join(', ')+(missing[ci].length>60?' 외':'')});
   });
+  const pinned=st.map((s,k)=>k).filter(k=>st[k]._pins.length);
+  if(pinned.length){const notDone=pinned.filter(k=>st[k]._pins.some(x=>!(slots[k][x.p]&&slots[k][x.p].inst===x.inst)));
+    issues.push({lv:notDone.length?'bad':'ok',msg:notDone.length?`지정 배치를 지키지 못한 학생 ${notDone.length}명`:`지정 배치 ${pinned.length}명을 모두 지정한 기간·기관에 배치했습니다.`,
+      detail:(notDone.length?notDone:pinned).map(k=>`${nm(k)} → ${st[k]._pins.map(x=>`${P[x.p]||(x.p+1)+'차'} ${x.inst.short}`).join(', ')}`).join(' · ')+(notDone.length?' · 지정한 기간이 제외 기간과 겹치거나, 그 과목의 다른 단위와 맞지 않는지 확인하세요.':'')});
+    const over=[];insts.forEach(i=>{for(let q=0;q<N;q++)if(uc(i,q)>cap(i,q))over.push(`${i.short} ${q+1}차 ${uc(i,q)}/${cap(i,q)}`);});
+    if(over.length)issues.push({lv:'warn',msg:'지정 배치 때문에 정원을 넘긴 기관이 있습니다.',detail:over.join(' · ')});
+    if(pinConflict.length)issues.push({lv:'warn',msg:`지정 배치가 다른 조건(여학생 전용, 이전 학기 같은 병동 등)과 겹치는 학생 ${new Set(pinConflict).size}명`,detail:[...new Set(pinConflict)].map(nm).join(', ')+' · 지정 배치를 우선했습니다.'});}
   const blk=st.map((s,k)=>k).filter(k=>st[k].blocked.size);
   if(blk.length){const miss=blk.filter(k=>missing.some(m=>m.includes(k)));
     issues.push({lv:miss.length?'warn':'ok',msg:`배치 제외 기간이 있는 학생 ${blk.length}명은 그 기간에 배치하지 않았습니다.${miss.length?` 그중 ${miss.length}명은 남은 기간에 모든 과목을 넣지 못했습니다.`:' 모두 남은 기간에 모든 과목이 배치되었습니다.'}`,

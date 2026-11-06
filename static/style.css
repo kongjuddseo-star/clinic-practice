@@ -169,3 +169,4 @@ select{font:inherit;font-size:13px;border:1px solid var(--line);border-radius:5p
 .cohortbar select{font-weight:600}
 .cohort-desc{font-size:13px;color:var(--muted);min-width:0}
 .cohort-desc b{color:var(--ink)}
+.tag.pin{border-color:color-mix(in srgb,var(--accent) 60%,transparent);color:var(--accent);font-weight:600}

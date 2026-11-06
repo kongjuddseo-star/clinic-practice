@@ -27,6 +27,7 @@ const MAXP=6;
 const STATUS={draft:['','작성 중'],requested:['warn','승인 요청'],approved:['ok','승인'],returned:['bad','반려']};
 const statusBadge=t=>{const [c,n]=STATUS[t.status||'draft']||STATUS.draft;return c?`<span class="badge ${c}">${n}</span>`:'';};
 const exclOf=tid=>(S.exclusions||[]).filter(e=>e.term_id===tid);
+const pinsOf=tid=>(S.pins||[]).filter(e=>e.term_id===tid);
 const courseOf=k=>(ui.cfg&&ui.cfg.courses.find(c=>c.key===k))||{key:k,label:'',short:''};
 /* 학기 교과목 이름 → 짧은 이름: 성인간호학실습(2) → 성인(2) */
 function courseShort(name){const n=String(name||'');const m=n.match(/성인|노인|여성|모성|아동|정신|관리|지역/);const num=(n.match(/\(\d\)/)||[''])[0];return m?m[0]+num:n.replace(/간호학실습|실습/g,'');}
@@ -186,6 +187,7 @@ function runPlace(newSeed){
   const st=CS().map(s=>({id:s.student_no,student_no:s.student_no,dbid:s.id,name:s.name,sex:s.sex,gpa:+s.gpa||0,age:+s.age||0,addr:s.addr||'',note:s.note||'',hist:[]}));
   S.placements.forEach(p=>{if(!ht.has(p.term_id))return;const k=idx.get(p.student_id);if(k==null)return;
     st[k].hist.push({term:lab.get(p.term_id),termId:p.term_id,seq:p.seq,inst:p.institution,course:p.course,ward:p.ward,period:p.period,key:instKey(p.institution),codes:[...wardCodes(p.ward)]});});
+  pinsOf(T.id).forEach(e=>{const k=idx.get(e.student_id);if(k==null)return;(st[k].pins=st[k].pins||[]).push({inst:'i'+e.institution_id,p:e.period,reason:e.reason});});
   exclOf(T.id).forEach(e=>{const k=idx.get(e.student_id);if(k==null)return;st[k].blocked=e.periods.filter(p=>p<termN(T));st[k].blockReason=e.reason;});
   ui.cfg=buildCfg(T);
   const r=computePlacement(st,ui.cfg,ui.seed);r.st=st;r.termId=T.id;r.histTerms=HT;ui.result=r;
@@ -245,15 +247,50 @@ function exclusionPanel(T){
     </tbody></table></div>`:''}
     </div></details>`;
 }
+function pinPanel(T){
+  if(!T)return '';
+  const N=termN(T),pins=pinsOf(T.id),sm=new Map(S.students.map(s=>[s.id,s])),im=new Map(S.institutions.map(i=>[i.id,i]));
+  const cs=termCourses(T.id),opts=cs.map(c=>`<optgroup label="${esc(c.name)}">${S.institutions.filter(i=>i.course_id===c.id).map(i=>`<option value="${i.id}">${esc(i.name)}</option>`).join('')}</optgroup>`).join('');
+  const cn=id=>{const i=im.get(id);const c=i&&cs.find(c=>c.id===i.course_id);return c?courseShort(c.name):'';};
+  return `<details class="panel" ${pins.length?'open':''}><summary style="cursor:pointer;font-weight:600">지정 배치 (반드시 이 기간에 이 기관) · ${new Set(pins.map(p=>p.student_id)).size}명</summary>
+    <div class="stack" style="margin-top:12px">
+    <p class="hint">여기에 넣은 학생은 고른 기간에 고른 기관으로 반드시 배치하고, 나머지 과목을 남은 기간에 배치합니다. 예: 교직실습 학생은 1월 아주대학교병원.</p>
+    <div class="grid-form" style="grid-template-columns:minmax(220px,2fr) minmax(200px,1.4fr) minmax(140px,1fr) minmax(110px,.8fr) auto">
+      <label for="pnNames">학생 이름 또는 학번<textarea id="pnNames" style="min-height:64px" placeholder="권하은, 김가령 …"></textarea></label>
+      <label for="pnInst">기관<select id="pnInst">${opts}</select></label>
+      <label for="pnPer">기간<select id="pnPer">${[...Array(N).keys()].map(p=>`<option value="${p}">${p+1}차 ${esc(T.periods[p]||'')}</option>`).join('')}</select></label>
+      <label for="pnReason">사유<input id="pnReason" value="교직실습"></label>
+      <button type="button" class="primary" id="btnPinAdd">지정하기</button>
+    </div>
+    ${pins.length?`<div class="tblwrap"><table><thead><tr><th>학번</th><th>이름</th><th>기간</th><th>과목 · 기관</th><th>사유</th><th></th></tr></thead><tbody>
+      ${pins.map(e=>{const s=sm.get(e.student_id)||{},i=im.get(e.institution_id)||{};return `<tr><td class="mono">${esc(s.student_no||'')}</td><td>${s.name?disp(s):''}</td><td>${e.period+1}차 ${esc(T.periods[e.period]||'')}</td><td>${esc(cn(e.institution_id))} · ${esc(i.name||'')}</td><td>${esc(e.reason)}</td><td><button type="button" class="ghost danger" data-pindel="${e.id}">삭제</button></td></tr>`;}).join('')}
+    </tbody></table></div>`:''}
+    </div></details>`;
+}
+function matchNames(text){
+  const toks=text.split(/[,\n\t;]+/).map(x=>x.trim()).filter(Boolean),cs=CS(),ids=[],miss=[],dup=[];
+  toks.forEach(tk=>{const m=cs.filter(s=>s.student_no===tk||s.name===tk);if(m.length===1)ids.push(m[0].id);else if(!m.length)miss.push(tk);else dup.push(`${tk}(${m.map(s=>s.student_no).join('/')})`);});
+  return {toks,ids,miss,dup};
+}
+function bindPins(T){
+  const add=$('#btnPinAdd');if(!add)return;
+  add.onclick=async()=>{
+    const {toks,ids,miss,dup}=matchNames($('#pnNames').value);
+    if(!toks.length){toast('학생 이름이나 학번을 넣으세요.');return;}
+    if(!ids.length){toast(`명단에서 찾지 못했습니다: ${[...miss,...dup].join(', ')}`);return;}
+    const j=await act(()=>api('POST',`/api/terms/${T.id}/pins`,{student_ids:ids,institution_id:+$('#pnInst').value,period:+$('#pnPer').value,reason:$('#pnReason').value}),
+      `${ids.length}명을 지정 배치했습니다.${miss.length?` 찾지 못함: ${miss.join(', ')}.`:''}${dup.length?` 동명이인은 학번으로 넣어 주세요: ${dup.join(', ')}`:''} 배치를 다시 실행하세요.`);
+    if(j){S.pins=j.pins;renderPlace();}
+  };
+  document.querySelectorAll('[data-pindel]').forEach(b=>b.onclick=async()=>{const j=await act(()=>api('DELETE',`/api/pins/${b.dataset.pindel}`),'지정 배치를 지웠습니다. 배치를 다시 실행하세요.');if(j){S.pins=j.pins;renderPlace();}});
+}
 function bindExclusion(T){
   const add=$('#btnExAdd');if(!add)return;
   add.onclick=async()=>{
-    const toks=$('#exNames').value.split(/[,\n\t;]+/).map(x=>x.trim()).filter(Boolean);
+    const {toks,ids,miss,dup}=matchNames($('#exNames').value);
     const periods=[...document.querySelectorAll('[data-exp]')].filter(x=>x.checked).map(x=>+x.dataset.exp);
     if(!toks.length){toast('학생 이름이나 학번을 넣으세요.');return;}
     if(!periods.length){toast('제외할 기간을 하나 이상 고르세요.');return;}
-    const cs=CS(),ids=[],miss=[],dup=[];
-    toks.forEach(tk=>{const m=cs.filter(s=>s.student_no===tk||s.name===tk);if(m.length===1)ids.push(m[0].id);else if(!m.length)miss.push(tk);else dup.push(`${tk}(${m.map(s=>s.student_no).join('/')})`);});
     if(!ids.length){toast(`명단에서 찾지 못했습니다: ${[...miss,...dup].join(', ')}`);return;}
     const j=await act(()=>api('POST',`/api/terms/${T.id}/exclusions`,{student_ids:ids,periods,reason:$('#exReason').value}),
       `${ids.length}명에게 제외 기간을 넣었습니다.${miss.length?` 찾지 못함: ${miss.join(', ')}.`:''}${dup.length?` 동명이인은 학번으로 넣어 주세요: ${dup.join(', ')}`:''} 배치를 다시 실행하세요.`);
@@ -288,13 +325,13 @@ function renderPlace(){
         ${wIn('addr','주소지 인근 점수','<span>그 밖의 기관에서 주소에 지역이 있을 때</span>')}
         ${wIn('same','이전 기관 감점','<span>이전 학기와 같은 기관(다른 병동)일 때 빼는 점수</span>')}
       </div></details>
-  </div>${approvalPanel(T)}${exclusionPanel(T)}<div id="placeBody" class="stack"></div>`;
+  </div>${approvalPanel(T)}${exclusionPanel(T)}${pinPanel(T)}<div id="placeBody" class="stack"></div>`;
   $('#placeTerm').onchange=e=>{ui.placeTerm=+e.target.value;renderPlace();};
   $('#btnRun').onclick=()=>{runPlace();toast('배치를 마쳤습니다. 확인 후 저장하세요.');};
   $('#btnRerun').onclick=()=>{runPlace(true);toast('같은 조건으로 다른 조합을 만들었습니다.');};
   $('#btnSave').onclick=savePlace;$('#btnPlaceX').onclick=exportPlace;
   el.querySelectorAll('[data-tact]').forEach(b=>b.onclick=()=>termAction(T,b.dataset.tact));
-  bindExclusion(T);
+  bindExclusion(T);bindPins(T);
   el.querySelectorAll('[data-w]').forEach(x=>x.onchange=async()=>{const j=await act(()=>api('PUT','/api/settings',{weights:{[x.dataset.w]:x.value}}),'기준 점수를 저장했습니다. 배치를 다시 실행하세요.');if(j)S.weights=j.weights;});
   const pb=$('#placeBody');
   if(!r){pb.innerHTML=`<div class="panel empty">${CS().length?'‘배치 실행’을 누르면 결과가 여기에 나옵니다. 저장하기 전까지는 미리보기입니다.':'학생 명단이 비어 있습니다. ‘학생 명단’ 탭에서 먼저 올리세요.'}</div>`;return;}
