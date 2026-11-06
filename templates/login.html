@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>임상실습 배치 관리 · 로그인</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+KR:wght@400;500;600;700&family=Nanum+Myeongjo:wght@700;800&display=swap">
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+<style>html,body{height:100%}</style>
+</head>
+<body>
+<div class="login-wrap">
+  <form class="login" method="post" action="/login">
+    <div>
+      <h1 style="font-size:24px">임상실습 배치 관리</h1>
+      <div class="sub">간호학과 · 관계자 전용</div>
+    </div>
+    {% if error %}<div class="errbox" role="alert">{{ error }}</div>{% endif %}
+    {% if not has_users %}<div class="errbox" role="alert">아직 계정이 없습니다. 배포 설정에서 ADMIN_PASSWORD를 넣고 다시 시작하면 첫 계정이 만들어집니다.</div>{% endif %}
+    <label for="login_id">아이디<input id="login_id" name="login_id" autocomplete="username" required autofocus></label>
+    <label for="password">비밀번호<input id="password" name="password" type="password" autocomplete="current-password" required></label>
+    <button class="primary" type="submit" style="justify-content:center;padding:10px">로그인</button>
+    <div class="roles">접근 가능: 학부장 · 임상실습학과장 · 임상실습주임교수 · 임상실습직원<br>계정이 필요하면 학부장, 임상실습학과장 또는 임상실습주임교수에게 요청하세요.</div>
+  </form>
+</div>
+</body>
+</html>

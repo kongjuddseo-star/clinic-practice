@@ -1,0 +1,728 @@
+"""간호학과 임상실습 배치 관리 서버.
+
+- 데이터: SQLite (DATA_DIR/clinic.db). Railway에서는 Volume을 DATA_DIR에 연결한다.
+- 접근: 학부장, 임상실습학과장, 임상실습주임교수, 임상실습직원 계정만 로그인할 수 있다.
+"""
+import datetime
+import functools
+import json
+import os
+import secrets
+import sqlite3
+import time
+
+from flask import Flask, g, jsonify, redirect, render_template, request, session, Response
+from werkzeug.security import check_password_hash, generate_password_hash
+
+ROLES = ["학부장", "임상실습학과장", "임상실습주임교수", "임상실습직원"]
+# 계정을 만들고 지울 수 있는 직위
+MANAGER_ROLES = {"학부장", "임상실습학과장", "임상실습주임교수"}
+COURSES = ["adult", "women", "child"]
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DATA_DIR = os.environ.get("DATA_DIR") or os.path.join(BASE_DIR, "data")
+PERSISTENT = bool(os.environ.get("DATA_DIR"))
+os.makedirs(DATA_DIR, exist_ok=True)
+DB_PATH = os.path.join(DATA_DIR, "clinic.db")
+
+
+def _secret_key():
+    if os.environ.get("SECRET_KEY"):
+        return os.environ["SECRET_KEY"]
+    path = os.path.join(DATA_DIR, "secret_key")
+    try:
+        with open(path) as f:
+            return f.read().strip()
+    except FileNotFoundError:
+        key = secrets.token_hex(32)
+        try:
+            with open(path, "x") as f:
+                f.write(key)
+        except FileExistsError:
+            with open(path) as f:
+                return f.read().strip()
+        return key
+
+
+app = Flask(__name__)
+app.secret_key = _secret_key()
+app.config.update(
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE="Lax",
+    SESSION_COOKIE_SECURE=bool(os.environ.get("RAILWAY_ENVIRONMENT") or os.environ.get("COOKIE_SECURE")),
+    PERMANENT_SESSION_LIFETIME=datetime.timedelta(hours=12),
+    MAX_CONTENT_LENGTH=20 * 1024 * 1024,
+    JSON_AS_ASCII=False,
+)
+
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS users(
+  id INTEGER PRIMARY KEY, login_id TEXT UNIQUE NOT NULL, name TEXT NOT NULL,
+  role TEXT NOT NULL, pw_hash TEXT NOT NULL, created_at TEXT DEFAULT CURRENT_TIMESTAMP);
+CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS institutions(
+  id INTEGER PRIMARY KEY, course TEXT NOT NULL, name TEXT NOT NULL, short TEXT NOT NULL DEFAULT '',
+  kw TEXT NOT NULL DEFAULT '', caps TEXT NOT NULL DEFAULT '[0,0,0,0]',
+  grade INTEGER NOT NULL DEFAULT 0, female INTEGER NOT NULL DEFAULT 0, local INTEGER NOT NULL DEFAULT 0,
+  sort INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE IF NOT EXISTS wards(
+  id INTEGER PRIMARY KEY, institution_id INTEGER NOT NULL REFERENCES institutions(id) ON DELETE CASCADE,
+  name TEXT NOT NULL, sort INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE IF NOT EXISTS students(
+  id INTEGER PRIMARY KEY, student_no TEXT UNIQUE NOT NULL, name TEXT NOT NULL, sex TEXT NOT NULL DEFAULT '여',
+  gpa REAL, age INTEGER, addr TEXT NOT NULL DEFAULT '', note TEXT NOT NULL DEFAULT '',
+  updated_at TEXT DEFAULT CURRENT_TIMESTAMP);
+CREATE TABLE IF NOT EXISTS terms(
+  id INTEGER PRIMARY KEY, label TEXT UNIQUE NOT NULL, periods TEXT NOT NULL DEFAULT '[]', sort INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE IF NOT EXISTS placements(
+  id INTEGER PRIMARY KEY, term_id INTEGER NOT NULL REFERENCES terms(id) ON DELETE CASCADE,
+  student_id INTEGER NOT NULL REFERENCES students(id) ON DELETE CASCADE,
+  seq INTEGER NOT NULL, period TEXT NOT NULL DEFAULT '', institution TEXT NOT NULL,
+  course TEXT NOT NULL DEFAULT '', ward TEXT NOT NULL DEFAULT '');
+CREATE INDEX IF NOT EXISTS ix_pl_term ON placements(term_id);
+CREATE INDEX IF NOT EXISTS ix_pl_student ON placements(student_id);
+CREATE INDEX IF NOT EXISTS ix_wards_inst ON wards(institution_id);
+"""
+
+# 2026-2학기 배치표 기준 기본 기관·정원·병동
+SEED_INSTITUTIONS = [
+    ("adult", "강동경희대학교병원", "강동경희", "서울", [24, 24, 24, 24], "7A병동|7B병동|8A병동|12B병동|8B병동|6A병동|응급실|회복실|수술실", "g"),
+    ("adult", "경희의료원", "경희의료원", "서울", [0, 0, 0, 0], "", "g"),
+    ("adult", "삼성창원병원", "삼성창원", "창원, 김해", [8, 8, 8, 8], "82병동|91병동|92병동|EICU", "g"),
+    ("adult", "이대서울병원", "이대서울", "서울", [8, 8, 8, 8], "93병동|EICU", "g"),
+    ("adult", "서남병원", "서남", "서울", [7, 7, 7, 7], "재활의학과(52병동)|중환자실", ""),
+    ("adult", "부평세림병원", "부평세림", "인천, 부평", [8, 8, 8, 8], "정형외과(8병동)|외과(6병동)|외과/내과(5A)|내과(5B)", ""),
+    ("adult", "한양대구리병원", "한양구리", "구리, 남양주", [6, 6, 6, 6], "102병동|72병동|MICU", ""),
+    ("adult", "안동병원", "안동", "안동, 영주", [8, 8, 8, 8], "114본관|104본관|104남관|104서관", "l"),
+    ("adult", "안동성소병원", "안동성소", "안동, 영주", [12, 12, 11, 11], "내과(A6)|인공신장실|응급실|중환자실|정형외과(B7)|외과(B8)", "l"),
+    ("women", "아인병원", "아인", "인천", [8, 6, 4, 4], "12병동|수술실", "f"),
+    ("women", "에이치큐브병원", "에이치큐브", "", [8, 7, 7, 8], "6층병동", "f"),
+    ("women", "안산단원병원", "안산단원", "안산", [7, 5, 6, 6], "산부인과(8병동)", ""),
+    ("women", "한림병원", "한림", "인천", [6, 8, 8, 8], "산부인과(41병동)|산부인과(42병동)", ""),
+    ("women", "안동병원", "안동", "안동, 영주", [5, 7, 8, 8], "분만간호파트|74동관간호파트", "l"),
+    ("women", "안동성소병원", "안동성소", "안동, 영주", [6, 7, 7, 7], "산부인과(A4)|산부인과(A7)", "l"),
+    ("child", "서울어린이병원", "서울어린이", "서울", [5, 5, 5, 6], "32병동|33병동|34병동|41병동|42병동|43병동", ""),
+    ("child", "다보스병원", "다보스", "용인", [5, 6, 6, 6], "소아청소년과(10병동)", ""),
+    ("child", "원주의료원", "원주", "원주", [6, 6, 6, 6], "소아청소년과(42병동)", ""),
+    ("child", "부평세림병원", "부평세림", "인천, 부평", [6, 6, 7, 5], "소아청소년과(천사병동)", ""),
+    ("child", "안동병원", "안동", "안동, 영주", [6, 6, 5, 5], "64남관간호파트", "l"),
+    ("child", "안동성소병원", "안동성소", "안동, 영주", [12, 11, 12, 12], "본관6병동|신관B6병동", "l"),
+]
+SEED_TERMS = [
+    ("3학년 1학기 (2026-1)", ["03/02-03/13", "03/16-03/27", "03/30-04/10", ""], 1),
+    ("3학년 2학기 (2026-2)", ["10/12-10/23", "10/26-11/06", "11/09-11/20", "11/23-12/04"], 2),
+    ("4학년 1학기 (2027-1)", ["", "", "", ""], 3),
+]
+DEFAULT_WEIGHTS = {"grade": 80, "local": 100, "age": 60, "addr": 30, "ageCut": 35, "same": 50}
+
+
+def init_db():
+    con = sqlite3.connect(DB_PATH, timeout=30)
+    con.isolation_level = None
+    try:
+        con.execute("PRAGMA journal_mode=WAL")
+        con.executescript(SCHEMA)
+        con.execute("BEGIN IMMEDIATE")
+        if con.execute("SELECT COUNT(*) FROM institutions").fetchone()[0] == 0 and \
+                con.execute("SELECT value FROM settings WHERE key='seeded'").fetchone() is None:
+            for i, (course, name, short, kw, caps, wards, flags) in enumerate(SEED_INSTITUTIONS):
+                cur = con.execute(
+                    "INSERT INTO institutions(course,name,short,kw,caps,grade,female,local,sort) VALUES(?,?,?,?,?,?,?,?,?)",
+                    (course, name, short, kw, json.dumps(caps), int("g" in flags), int("f" in flags), int("l" in flags), i))
+                for j, w in enumerate([w for w in wards.split("|") if w]):
+                    con.execute("INSERT INTO wards(institution_id,name,sort) VALUES(?,?,?)", (cur.lastrowid, w, j))
+            for label, periods, sort in SEED_TERMS:
+                con.execute("INSERT OR IGNORE INTO terms(label,periods,sort) VALUES(?,?,?)", (label, json.dumps(periods, ensure_ascii=False), sort))
+            con.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('weights',?)", (json.dumps(DEFAULT_WEIGHTS),))
+            con.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('seeded','1')")
+        if con.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 0:
+            login = os.environ.get("ADMIN_LOGIN", "admin").strip()
+            pw = os.environ.get("ADMIN_PASSWORD")
+            if pw:
+                role = os.environ.get("ADMIN_ROLE", "임상실습주임교수")
+                if role not in ROLES:
+                    role = "임상실습주임교수"
+                con.execute("INSERT INTO users(login_id,name,role,pw_hash) VALUES(?,?,?,?)",
+                            (login, os.environ.get("ADMIN_NAME", "관리자"), role, generate_password_hash(pw)))
+        con.execute("COMMIT")
+    finally:
+        con.close()
+
+
+init_db()
+
+
+def db():
+    if "db" not in g:
+        g.db = sqlite3.connect(DB_PATH, timeout=30)
+        g.db.row_factory = sqlite3.Row
+        g.db.execute("PRAGMA foreign_keys=ON")
+    return g.db
+
+
+@app.teardown_appcontext
+def _close(_exc):
+    con = g.pop("db", None)
+    if con is not None:
+        con.close()
+
+
+def err(msg, code=400):
+    return jsonify(error=msg), code
+
+
+def current_user():
+    uid = session.get("uid")
+    if not uid:
+        return None
+    return db().execute("SELECT id,login_id,name,role FROM users WHERE id=?", (uid,)).fetchone()
+
+
+def login_required(f):
+    @functools.wraps(f)
+    def wrapper(*a, **kw):
+        u = current_user()
+        if not u:
+            session.clear()
+            if request.path.startswith("/api/"):
+                return err("로그인이 필요합니다.", 401)
+            return redirect("/login")
+        if request.path.startswith("/api/") and request.method != "GET" and \
+                request.headers.get("X-Requested-With") != "fetch":
+            return err("잘못된 요청입니다.", 400)
+        g.user = u
+        return f(*a, **kw)
+    return wrapper
+
+
+def manager_required(f):
+    @functools.wraps(f)
+    @login_required
+    def wrapper(*a, **kw):
+        if g.user["role"] not in MANAGER_ROLES:
+            return err("계정 관리는 학부장, 임상실습학과장, 임상실습주임교수만 할 수 있습니다.", 403)
+        return f(*a, **kw)
+    return wrapper
+
+
+def body():
+    return request.get_json(silent=True) or {}
+
+
+def to_float(v):
+    try:
+        return float(str(v).replace(",", ""))
+    except (TypeError, ValueError):
+        return None
+
+
+def to_int(v):
+    f = to_float(v)
+    return int(f) if f is not None else None
+
+
+# ---------------------------------------------------------------- pages
+@app.get("/healthz")
+def healthz():
+    return "ok"
+
+
+@app.get("/login")
+def login_page():
+    if current_user():
+        return redirect("/")
+    return render_template("login.html", error=None, has_users=_has_users())
+
+
+def _has_users():
+    return db().execute("SELECT COUNT(*) FROM users").fetchone()[0] > 0
+
+
+@app.post("/login")
+def login_post():
+    login_id = (request.form.get("login_id") or "").strip()
+    pw = request.form.get("password") or ""
+    u = db().execute("SELECT * FROM users WHERE login_id=?", (login_id,)).fetchone()
+    if not u or not check_password_hash(u["pw_hash"], pw):
+        time.sleep(0.6)
+        return render_template("login.html", error="아이디 또는 비밀번호가 맞지 않습니다.", has_users=_has_users()), 401
+    session.clear()
+    session.permanent = True
+    session["uid"] = u["id"]
+    return redirect("/")
+
+
+@app.get("/logout")
+def logout():
+    session.clear()
+    return redirect("/login")
+
+
+@app.get("/")
+@login_required
+def index():
+    return render_template("index.html", user=g.user)
+
+
+# ---------------------------------------------------------------- data
+def institutions_payload():
+    rows = db().execute("SELECT * FROM institutions ORDER BY sort,id").fetchall()
+    wards = db().execute("SELECT * FROM wards ORDER BY sort,id").fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["caps"] = json.loads(d["caps"])
+        for k in ("grade", "female", "local"):
+            d[k] = bool(d[k])
+        d["wards"] = [{"id": w["id"], "name": w["name"]} for w in wards if w["institution_id"] == r["id"]]
+        out.append(d)
+    return out
+
+
+def terms_payload():
+    rows = db().execute(
+        "SELECT t.*, (SELECT COUNT(*) FROM placements p WHERE p.term_id=t.id) AS count FROM terms t ORDER BY sort,id").fetchall()
+    return [dict(r, periods=json.loads(r["periods"])) for r in rows]
+
+
+def weights():
+    r = db().execute("SELECT value FROM settings WHERE key='weights'").fetchone()
+    w = dict(DEFAULT_WEIGHTS)
+    if r:
+        w.update(json.loads(r["value"]))
+    return w
+
+
+@app.get("/api/bootstrap")
+@login_required
+def bootstrap():
+    can = g.user["role"] in MANAGER_ROLES
+    data = {
+        "me": dict(g.user),
+        "roles": ROLES,
+        "canManage": can,
+        "institutions": institutions_payload(),
+        "students": [dict(r) for r in db().execute("SELECT * FROM students ORDER BY student_no")],
+        "terms": terms_payload(),
+        "placements": [dict(r) for r in db().execute(
+            "SELECT term_id,student_id,seq,period,institution,course,ward FROM placements ORDER BY term_id,student_id,seq")],
+        "weights": weights(),
+        "persistent": PERSISTENT,
+    }
+    if can:
+        data["users"] = [dict(r) for r in db().execute("SELECT id,login_id,name,role,created_at FROM users ORDER BY id")]
+    return jsonify(data)
+
+
+# ---- institutions & wards
+INST_FIELDS = ("course", "name", "short", "kw", "caps", "grade", "female", "local", "sort")
+
+
+def clean_inst(b, partial=False):
+    out = {}
+    for k in INST_FIELDS:
+        if k not in b:
+            continue
+        v = b[k]
+        if k == "course":
+            if v not in COURSES:
+                raise ValueError("과목을 선택하세요.")
+        elif k in ("name", "short", "kw"):
+            v = str(v or "").strip()
+            if k == "name" and not v:
+                raise ValueError("기관명을 입력하세요.")
+        elif k == "caps":
+            v = [max(0, to_int(x) or 0) for x in (list(v or []) + [0, 0, 0, 0])[:4]]
+            v = json.dumps(v)
+        elif k in ("grade", "female", "local"):
+            v = 1 if v else 0
+        elif k == "sort":
+            v = to_int(v) or 0
+        out[k] = v
+    if not partial and ("course" not in out or "name" not in out):
+        raise ValueError("과목과 기관명이 필요합니다.")
+    return out
+
+
+@app.post("/api/institutions")
+@login_required
+def inst_create():
+    b = body()
+    try:
+        d = clean_inst(b)
+    except ValueError as e:
+        return err(str(e))
+    d.setdefault("short", d["name"].replace("병원", ""))
+    d.setdefault("caps", json.dumps([0, 0, 0, 0]))
+    if "sort" not in d:
+        d["sort"] = (db().execute("SELECT COALESCE(MAX(sort),0)+1 FROM institutions").fetchone()[0])
+    cols = ",".join(d)
+    cur = db().execute(f"INSERT INTO institutions({cols}) VALUES({','.join('?' * len(d))})", list(d.values()))
+    for j, w in enumerate(b.get("wards") or []):
+        if str(w).strip():
+            db().execute("INSERT INTO wards(institution_id,name,sort) VALUES(?,?,?)", (cur.lastrowid, str(w).strip(), j))
+    db().commit()
+    return jsonify(ok=True, id=cur.lastrowid, institutions=institutions_payload())
+
+
+@app.put("/api/institutions/<int:iid>")
+@login_required
+def inst_update(iid):
+    try:
+        d = clean_inst(body(), partial=True)
+    except ValueError as e:
+        return err(str(e))
+    if not d:
+        return err("바꿀 내용이 없습니다.")
+    db().execute(f"UPDATE institutions SET {','.join(k + '=?' for k in d)} WHERE id=?", [*d.values(), iid])
+    db().commit()
+    return jsonify(ok=True, institutions=institutions_payload())
+
+
+@app.delete("/api/institutions/<int:iid>")
+@login_required
+def inst_delete(iid):
+    db().execute("DELETE FROM institutions WHERE id=?", (iid,))
+    db().commit()
+    return jsonify(ok=True, institutions=institutions_payload())
+
+
+@app.post("/api/institutions/<int:iid>/wards")
+@login_required
+def ward_create(iid):
+    name = str(body().get("name") or "").strip()
+    if not name:
+        return err("병동 이름을 입력하세요.")
+    if not db().execute("SELECT 1 FROM institutions WHERE id=?", (iid,)).fetchone():
+        return err("기관을 찾을 수 없습니다.", 404)
+    sort = db().execute("SELECT COALESCE(MAX(sort),0)+1 FROM wards WHERE institution_id=?", (iid,)).fetchone()[0]
+    db().execute("INSERT INTO wards(institution_id,name,sort) VALUES(?,?,?)", (iid, name, sort))
+    db().commit()
+    return jsonify(ok=True, institutions=institutions_payload())
+
+
+@app.put("/api/wards/<int:wid>")
+@login_required
+def ward_update(wid):
+    name = str(body().get("name") or "").strip()
+    if not name:
+        return err("병동 이름을 입력하세요.")
+    db().execute("UPDATE wards SET name=? WHERE id=?", (name, wid))
+    db().commit()
+    return jsonify(ok=True, institutions=institutions_payload())
+
+
+@app.delete("/api/wards/<int:wid>")
+@login_required
+def ward_delete(wid):
+    db().execute("DELETE FROM wards WHERE id=?", (wid,))
+    db().commit()
+    return jsonify(ok=True, institutions=institutions_payload())
+
+
+# ---- students
+def clean_student(b, partial=False):
+    out = {}
+    if "student_no" in b or not partial:
+        v = str(b.get("student_no") or "").strip()
+        if not v:
+            raise ValueError("학번을 입력하세요.")
+        out["student_no"] = v
+    if "name" in b or not partial:
+        v = str(b.get("name") or "").strip()
+        if not v:
+            raise ValueError("이름을 입력하세요.")
+        out["name"] = v
+    if "sex" in b:
+        out["sex"] = "남" if str(b["sex"]).strip().startswith(("남", "M", "m")) else "여"
+    if "gpa" in b:
+        out["gpa"] = to_float(b["gpa"])
+    if "age" in b:
+        out["age"] = to_int(b["age"])
+    for k in ("addr", "note"):
+        if k in b:
+            out[k] = str(b[k] or "").strip()
+    return out
+
+
+def students_payload():
+    return [dict(r) for r in db().execute("SELECT * FROM students ORDER BY student_no")]
+
+
+@app.post("/api/students")
+@login_required
+def student_create():
+    try:
+        d = clean_student(body())
+    except ValueError as e:
+        return err(str(e))
+    if db().execute("SELECT 1 FROM students WHERE student_no=?", (d["student_no"],)).fetchone():
+        return err(f"학번 {d['student_no']} 학생이 이미 있습니다.")
+    db().execute(f"INSERT INTO students({','.join(d)}) VALUES({','.join('?' * len(d))})", list(d.values()))
+    db().commit()
+    return jsonify(ok=True, students=students_payload())
+
+
+@app.put("/api/students/<int:sid>")
+@login_required
+def student_update(sid):
+    try:
+        d = clean_student(body(), partial=True)
+    except ValueError as e:
+        return err(str(e))
+    if not d:
+        return err("바꿀 내용이 없습니다.")
+    if "student_no" in d and db().execute("SELECT 1 FROM students WHERE student_no=? AND id<>?", (d["student_no"], sid)).fetchone():
+        return err("같은 학번의 학생이 이미 있습니다.")
+    db().execute(f"UPDATE students SET {','.join(k + '=?' for k in d)},updated_at=CURRENT_TIMESTAMP WHERE id=?", [*d.values(), sid])
+    db().commit()
+    return jsonify(ok=True, student=dict(db().execute("SELECT * FROM students WHERE id=?", (sid,)).fetchone()))
+
+
+@app.delete("/api/students/<int:sid>")
+@login_required
+def student_delete(sid):
+    db().execute("DELETE FROM students WHERE id=?", (sid,))
+    db().commit()
+    return jsonify(ok=True)
+
+
+@app.post("/api/students/import")
+@login_required
+def student_import():
+    rows = body().get("students") or []
+    added = updated = 0
+    errors = []
+    for i, b in enumerate(rows):
+        try:
+            d = clean_student(b)
+        except ValueError as e:
+            errors.append(f"{i + 1}행: {e}")
+            continue
+        ex = db().execute("SELECT id FROM students WHERE student_no=?", (d["student_no"],)).fetchone()
+        if ex:
+            d.pop("student_no")
+            if "note" in d and not d["note"]:
+                d.pop("note")  # 엑셀에 참고가 비어 있으면 저장된 참고를 지우지 않음
+            db().execute(f"UPDATE students SET {','.join(k + '=?' for k in d)},updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                         [*d.values(), ex["id"]])
+            updated += 1
+        else:
+            db().execute(f"INSERT INTO students({','.join(d)}) VALUES({','.join('?' * len(d))})", list(d.values()))
+            added += 1
+    db().commit()
+    return jsonify(ok=True, added=added, updated=updated, errors=errors, students=students_payload())
+
+
+# ---- terms & placements
+@app.post("/api/terms")
+@login_required
+def term_create():
+    b = body()
+    label = str(b.get("label") or "").strip()
+    if not label:
+        return err("학기 이름을 입력하세요.")
+    if db().execute("SELECT 1 FROM terms WHERE label=?", (label,)).fetchone():
+        return err("같은 이름의 학기가 이미 있습니다.")
+    periods = [str(x or "").strip() for x in (list(b.get("periods") or []) + ["", "", "", ""])[:4]]
+    sort = to_int(b.get("sort"))
+    if sort is None:
+        sort = db().execute("SELECT COALESCE(MAX(sort),0)+1 FROM terms").fetchone()[0]
+    cur = db().execute("INSERT INTO terms(label,periods,sort) VALUES(?,?,?)", (label, json.dumps(periods, ensure_ascii=False), sort))
+    db().commit()
+    return jsonify(ok=True, id=cur.lastrowid, terms=terms_payload())
+
+
+@app.put("/api/terms/<int:tid>")
+@login_required
+def term_update(tid):
+    b = body()
+    sets, vals = [], []
+    if "label" in b:
+        label = str(b["label"] or "").strip()
+        if not label:
+            return err("학기 이름을 입력하세요.")
+        if db().execute("SELECT 1 FROM terms WHERE label=? AND id<>?", (label, tid)).fetchone():
+            return err("같은 이름의 학기가 이미 있습니다.")
+        sets.append("label=?"); vals.append(label)
+    if "periods" in b:
+        sets.append("periods=?")
+        vals.append(json.dumps([str(x or "").strip() for x in (list(b["periods"] or []) + ["", "", "", ""])[:4]], ensure_ascii=False))
+    if "sort" in b:
+        sets.append("sort=?"); vals.append(to_int(b["sort"]) or 0)
+    if not sets:
+        return err("바꿀 내용이 없습니다.")
+    db().execute(f"UPDATE terms SET {','.join(sets)} WHERE id=?", [*vals, tid])
+    db().commit()
+    return jsonify(ok=True, terms=terms_payload())
+
+
+@app.delete("/api/terms/<int:tid>")
+@login_required
+def term_delete(tid):
+    db().execute("DELETE FROM terms WHERE id=?", (tid,))
+    db().commit()
+    return jsonify(ok=True, terms=terms_payload())
+
+
+@app.put("/api/terms/<int:tid>/placements")
+@login_required
+def placements_put(tid):
+    """replace_all=true: 이 학기 배치를 통째로 바꿈. 아니면 placements에 나온 학생의 배치만 바꿈."""
+    b = body()
+    if not db().execute("SELECT 1 FROM terms WHERE id=?", (tid,)).fetchone():
+        return err("학기를 찾을 수 없습니다.", 404)
+    rows = b.get("placements") or []
+    valid_ids = {r[0] for r in db().execute("SELECT id FROM students")}
+    clean = []
+    for p in rows:
+        sid = to_int(p.get("student_id"))
+        inst = str(p.get("institution") or "").strip()
+        if sid not in valid_ids or not inst:
+            continue
+        clean.append((tid, sid, to_int(p.get("seq")) or 1, str(p.get("period") or "").strip(), inst,
+                      str(p.get("course") or "").strip(), str(p.get("ward") or "").strip()))
+    if b.get("replace_all"):
+        db().execute("DELETE FROM placements WHERE term_id=?", (tid,))
+    else:
+        for sid in {c[1] for c in clean}:
+            db().execute("DELETE FROM placements WHERE term_id=? AND student_id=?", (tid, sid))
+    db().executemany("INSERT INTO placements(term_id,student_id,seq,period,institution,course,ward) VALUES(?,?,?,?,?,?,?)", clean)
+    db().commit()
+    return jsonify(ok=True, saved=len(clean), terms=terms_payload(), placements=[dict(r) for r in db().execute(
+        "SELECT term_id,student_id,seq,period,institution,course,ward FROM placements ORDER BY term_id,student_id,seq")])
+
+
+@app.delete("/api/terms/<int:tid>/placements")
+@login_required
+def placements_clear(tid):
+    db().execute("DELETE FROM placements WHERE term_id=?", (tid,))
+    db().commit()
+    return jsonify(ok=True, terms=terms_payload())
+
+
+# ---- settings
+@app.put("/api/settings")
+@login_required
+def settings_put():
+    w = weights()
+    for k, v in (body().get("weights") or {}).items():
+        if k in DEFAULT_WEIGHTS and to_float(v) is not None:
+            w[k] = to_float(v)
+    db().execute("INSERT OR REPLACE INTO settings(key,value) VALUES('weights',?)", (json.dumps(w),))
+    db().commit()
+    return jsonify(ok=True, weights=w)
+
+
+# ---- accounts
+def users_payload():
+    return [dict(r) for r in db().execute("SELECT id,login_id,name,role,created_at FROM users ORDER BY id")]
+
+
+def check_pw(pw):
+    if len(pw or "") < 8:
+        raise ValueError("비밀번호는 8자 이상이어야 합니다.")
+
+
+@app.post("/api/users")
+@manager_required
+def user_create():
+    b = body()
+    login_id = str(b.get("login_id") or "").strip()
+    name = str(b.get("name") or "").strip()
+    role = b.get("role")
+    if not login_id or not name:
+        return err("아이디와 이름을 입력하세요.")
+    if role not in ROLES:
+        return err("직위를 선택하세요.")
+    try:
+        check_pw(b.get("password"))
+    except ValueError as e:
+        return err(str(e))
+    if db().execute("SELECT 1 FROM users WHERE login_id=?", (login_id,)).fetchone():
+        return err("이미 있는 아이디입니다.")
+    db().execute("INSERT INTO users(login_id,name,role,pw_hash) VALUES(?,?,?,?)",
+                 (login_id, name, role, generate_password_hash(b["password"])))
+    db().commit()
+    return jsonify(ok=True, users=users_payload())
+
+
+def _managers_left(excluding=None, new_role=None):
+    rows = db().execute("SELECT id,role FROM users").fetchall()
+    n = 0
+    for r in rows:
+        role = new_role if r["id"] == excluding and new_role is not None else r["role"]
+        if r["id"] == excluding and new_role is None:
+            continue
+        if role in MANAGER_ROLES:
+            n += 1
+    return n
+
+
+@app.put("/api/users/<int:uid>")
+@manager_required
+def user_update(uid):
+    b = body()
+    sets, vals = [], []
+    if "name" in b and str(b["name"]).strip():
+        sets.append("name=?"); vals.append(str(b["name"]).strip())
+    if "role" in b:
+        if b["role"] not in ROLES:
+            return err("직위를 선택하세요.")
+        if _managers_left(excluding=uid, new_role=b["role"]) == 0:
+            return err("계정을 관리할 수 있는 직위(학부장·학과장·주임교수)가 최소 1명은 있어야 합니다.")
+        sets.append("role=?"); vals.append(b["role"])
+    if b.get("password"):
+        try:
+            check_pw(b["password"])
+        except ValueError as e:
+            return err(str(e))
+        sets.append("pw_hash=?"); vals.append(generate_password_hash(b["password"]))
+    if not sets:
+        return err("바꿀 내용이 없습니다.")
+    db().execute(f"UPDATE users SET {','.join(sets)} WHERE id=?", [*vals, uid])
+    db().commit()
+    return jsonify(ok=True, users=users_payload())
+
+
+@app.delete("/api/users/<int:uid>")
+@manager_required
+def user_delete(uid):
+    if uid == g.user["id"]:
+        return err("지금 로그인한 본인 계정은 지울 수 없습니다.")
+    if _managers_left(excluding=uid) == 0:
+        return err("계정을 관리할 수 있는 직위가 최소 1명은 있어야 합니다.")
+    db().execute("DELETE FROM users WHERE id=?", (uid,))
+    db().commit()
+    return jsonify(ok=True, users=users_payload())
+
+
+@app.put("/api/me/password")
+@login_required
+def my_password():
+    b = body()
+    u = db().execute("SELECT pw_hash FROM users WHERE id=?", (g.user["id"],)).fetchone()
+    if not check_password_hash(u["pw_hash"], b.get("current") or ""):
+        return err("지금 비밀번호가 맞지 않습니다.")
+    try:
+        check_pw(b.get("new"))
+    except ValueError as e:
+        return err(str(e))
+    db().execute("UPDATE users SET pw_hash=? WHERE id=?", (generate_password_hash(b["new"]), g.user["id"]))
+    db().commit()
+    return jsonify(ok=True)
+
+
+@app.get("/api/backup")
+@login_required
+def backup():
+    data = {"exported_at": datetime.datetime.now().isoformat(timespec="seconds")}
+    for t in ("institutions", "wards", "students", "terms", "placements", "settings"):
+        data[t] = [dict(r) for r in db().execute(f"SELECT * FROM {t}")]
+    name = f"clinic-backup-{datetime.date.today().isoformat()}.json"
+    return Response(json.dumps(data, ensure_ascii=False, indent=1), mimetype="application/json",
+                    headers={"Content-Disposition": f"attachment; filename={name}"})
+
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)), debug=bool(os.environ.get("FLASK_DEBUG")))

@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>임상실습 배치 관리</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+KR:wght@400;500;600;700&family=Nanum+Myeongjo:wght@700;800&display=swap">
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <div>
+      <h1>임상실습 배치 관리</h1>
+      <div class="sub">간호학과 · 학생별 3학년 1학기 · 2학기 · 4학년 1학기 실습을 함께 봅니다</div>
+    </div>
+    <div class="userbar">
+      <b>{{ user['name'] }}</b><span class="role">{{ user['role'] }}</span>
+      <button type="button" class="ghost" id="btnMyPw">비밀번호 변경</button>
+      <a href="/logout">로그아웃</a>
+    </div>
+  </header>
+  <div id="storageWarn" class="banner" hidden><b>데이터가 임시 저장소에 있습니다.</b> 서버를 다시 배포하면 지워질 수 있습니다. Railway에서 Volume을 연결하고 DATA_DIR 변수를 설정하세요(README 참고).</div>
+  <nav class="tabs" role="tablist">
+    <button role="tab" data-tab="history" aria-selected="true" type="button">학생별 실습 이력</button>
+    <button role="tab" data-tab="place" aria-selected="false" type="button">자동 배치</button>
+    <button role="tab" data-tab="students" aria-selected="false" type="button">학생 명단</button>
+    <button role="tab" data-tab="insts" aria-selected="false" type="button">기관·병동</button>
+    <button role="tab" data-tab="terms" aria-selected="false" type="button">학기·이력 가져오기</button>
+    <button role="tab" data-tab="users" aria-selected="false" type="button" id="tabUsers" hidden>계정 관리</button>
+  </nav>
+  <section id="tab-history" class="stack"><div class="panel empty">불러오는 중…</div></section>
+  <section id="tab-place" class="stack" hidden></section>
+  <section id="tab-students" class="stack" hidden></section>
+  <section id="tab-insts" class="stack" hidden></section>
+  <section id="tab-terms" class="stack" hidden></section>
+  <section id="tab-users" class="stack" hidden></section>
+</div>
+<div id="toast" class="toast" hidden></div>
+<script src="{{ url_for('static', filename='engine.js') }}"></script>
+<script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>
