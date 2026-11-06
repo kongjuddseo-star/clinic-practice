@@ -307,7 +307,7 @@ function renderStudents(){
   const el=$('#tab-students');if(noCohort(el))return;
   el.innerHTML=`<div class="panel stack">
     <h2>${ui.year}학년도 ${ui.grade}학년 명단 엑셀로 올리기</h2>
-    <p class="hint">첫 시트에서 <b>학번, 이름, 성별, 성적, 연령, 주소, 참고</b> 열을 읽습니다. 연령 대신 생년월일이나 주민등록번호 앞자리가 있어도 됩니다. 같은 학번이 이미 있으면 내용을 새로 고치고, 엑셀의 참고 칸이 비어 있으면 저장된 참고는 그대로 둡니다.</p>
+    <p class="hint">첫 시트에서 <b>학번, 이름, 성별, 성적(또는 백분위), 연령, 주소, 참고</b> 열을 읽습니다. 학사 시스템에서 받은 재학생 명단(.xls)도 그대로 올릴 수 있습니다. 연령 대신 생년월일이나 주민등록번호 앞자리가 있어도 됩니다. 같은 학번이 이미 있으면 내용을 새로 고치고, 엑셀의 참고 칸이 비어 있으면 저장된 참고는 그대로 둡니다.</p>
     <label class="drop" id="drop" for="file">파일을 여기로 끌어오거나 눌러서 고르세요<input id="file" type="file" accept=".xlsx,.xls,.csv" hidden></label>
     <div class="row"><button type="button" id="btnTpl">명단 양식 받기</button></div>
   </div>
@@ -377,7 +377,7 @@ function parseStudentRows(rows){
   const hi=rows.findIndex(r=>r.some(c=>/이름|성명/.test(String(c)))&&r.some(c=>/학번/.test(String(c))));
   if(hi<0)return '‘학번’과 ‘이름’ 열을 찾지 못했습니다. 머리글 행을 확인하세요.';
   const h=rows[hi].map(c=>String(c).replace(/\s+/g,'').trim());const col=re=>h.findIndex(c=>re.test(c));
-  const C={id:col(/^학번/),name:col(/이름|성명/),sex:col(/성별/),gpa:col(/^성적|평점|평균평점|학점평균|GPA/i),age:col(/연령|나이/),birth:col(/생년|생일|주민/),addr:col(/주소|거주/),note:col(/참고|비고|메모/)};
+  const C={id:col(/^학번/),name:col(/이름|성명/),sex:col(/성별/),gpa:col(/^성적|평점|평균평점|학점평균|백분위|GPA/i),age:col(/연령|나이/),birth:col(/생년|생일|주민/),addr:col(/주소|거주/),note:col(/참고|비고|메모/)};
   const yr=new Date().getFullYear();const out=[];
   rows.slice(hi+1).forEach(r=>{
     const name=String(r[C.name]||'').trim(),no=String(r[C.id]||'').trim();if(!name||!no)return;
