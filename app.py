@@ -78,6 +78,9 @@ CREATE TABLE IF NOT EXISTS students(
   updated_at TEXT DEFAULT CURRENT_TIMESTAMP);
 CREATE TABLE IF NOT EXISTS cohorts(
   id INTEGER PRIMARY KEY, year3 INTEGER UNIQUE NOT NULL, name TEXT NOT NULL DEFAULT '');
+CREATE TABLE IF NOT EXISTS courses(
+  id INTEGER PRIMARY KEY, term_id INTEGER NOT NULL REFERENCES terms(id) ON DELETE CASCADE,
+  name TEXT NOT NULL, units INTEGER NOT NULL DEFAULT 1, consecutive INTEGER NOT NULL DEFAULT 0, sort INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS terms(
   id INTEGER PRIMARY KEY, label TEXT UNIQUE NOT NULL, periods TEXT NOT NULL DEFAULT '[]', sort INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS placements(
@@ -122,11 +125,30 @@ SEED_PERIODS = {
 }
 
 
+# 학기별 기본 교과목: (이름, 2주 단위 수, 연속 여부)
+DEFAULT_COURSES = {
+    "3-1": [("성인간호학실습(1)", 2, 0), ("노인간호학실습", 1, 0)],
+    "3-2": [("성인간호학실습(2)", 2, 1), ("여성건강간호학실습", 1, 0), ("아동간호학실습", 1, 0)],
+    "4-1": [("성인간호학실습(3)", 1, 0), ("간호관리학실습", 1, 0), ("정신간호학실습", 1, 0)],
+}
+
+
 def term_label(year3, kind):
     for k, name, dy, sem in TERM_KINDS:
         if k == kind:
             return f"{name} ({year3 + dy}-{sem})"
-    return kind
+    try:
+        g, sem = [int(x) for x in kind.split("-")]
+        return f"{g}학년 {sem}학기 ({year3 + g - 3}-{sem})"
+    except ValueError:
+        return kind
+
+
+def ensure_courses(con, term_id, kind):
+    if con.execute("SELECT COUNT(*) FROM courses WHERE term_id=?", (term_id,)).fetchone()[0]:
+        return
+    for i, (name, units, consec) in enumerate(DEFAULT_COURSES.get(kind, [])):
+        con.execute("INSERT INTO courses(term_id,name,units,consecutive,sort) VALUES(?,?,?,?,?)", (term_id, name, units, consec, i + 1))
 
 
 def create_cohort(con, year3, name=""):
@@ -137,9 +159,12 @@ def create_cohort(con, year3, name=""):
         ex = con.execute("SELECT id FROM terms WHERE label=?", (label,)).fetchone()
         if ex:  # 이전 버전에서 만든 같은 학기는 이 기수로 옮김
             con.execute("UPDATE terms SET cohort_id=?,kind=?,sort=? WHERE id=?", (cid, kind, i + 1, ex[0]))
+            tid = ex[0]
         else:
-            con.execute("INSERT INTO terms(label,periods,sort,cohort_id,kind) VALUES(?,?,?,?,?)",
-                        (label, json.dumps(SEED_PERIODS.get((year3, kind), ["", "", "", ""]), ensure_ascii=False), i + 1, cid, kind))
+            tid = con.execute("INSERT INTO terms(label,periods,sort,cohort_id,kind) VALUES(?,?,?,?,?)",
+                              (label, json.dumps(SEED_PERIODS.get((year3, kind), ["", "", "", ""]), ensure_ascii=False), i + 1, cid, kind)).lastrowid
+        if con.execute("SELECT 1 FROM sqlite_master WHERE name='courses'").fetchone():
+            ensure_courses(con, tid, kind)
     return cid
 
 
@@ -205,6 +230,20 @@ def init_db():
             create_cohort(con, 2027)
             con.execute("UPDATE students SET cohort_id=? WHERE cohort_id IS NULL", (c26,))
             con.execute("UPDATE terms SET cohort_id=?,kind='etc',sort=10+id WHERE cohort_id IS NULL", (c26,))
+        # 학기별 교과목 구조로 옮기기: 기관은 학기의 교과목에 속한다. 이전 기관은 2026년 3학년 2학기로
+        icols = [r[1] for r in con.execute("PRAGMA table_info(institutions)")]
+        if "course_id" not in icols:
+            con.execute("ALTER TABLE institutions ADD COLUMN course_id INTEGER REFERENCES courses(id) ON DELETE CASCADE")
+        if con.execute("SELECT value FROM settings WHERE key='courses_v1'").fetchone() is None:
+            for tid, kind in con.execute("SELECT id,kind FROM terms").fetchall():
+                ensure_courses(con, tid, kind)
+            t32 = con.execute("SELECT t.id FROM terms t JOIN cohorts c ON c.id=t.cohort_id WHERE c.year3=2026 AND t.kind='3-2'").fetchone()
+            if t32:
+                cmap = {r[1]: r[0] for r in con.execute("SELECT id,name FROM courses WHERE term_id=?", (t32[0],))}
+                for old, name in (("adult", "성인간호학실습(2)"), ("women", "여성건강간호학실습"), ("child", "아동간호학실습")):
+                    if name in cmap:
+                        con.execute("UPDATE institutions SET course_id=? WHERE course=? AND course_id IS NULL", (cmap[name], old))
+            con.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('courses_v1','1')")
         cols = [r[1] for r in con.execute("PRAGMA table_info(users)")]
         if "must_change" not in cols:
             con.execute("ALTER TABLE users ADD COLUMN must_change INTEGER NOT NULL DEFAULT 0")
@@ -359,6 +398,137 @@ def institutions_payload():
     return out
 
 
+def courses_payload():
+    return [dict(r) for r in db().execute("SELECT * FROM courses ORDER BY term_id,sort,id")]
+
+
+def clean_course(b, partial=False):
+    out = {}
+    if "name" in b or not partial:
+        v = str(b.get("name") or "").strip()
+        if not v:
+            raise ValueError("교과목 이름을 입력하세요.")
+        out["name"] = v
+    if "units" in b:
+        u = to_int(b["units"]) or 1
+        if u < 1 or u > 4:
+            raise ValueError("2주 단위 수는 1~4 사이여야 합니다.")
+        out["units"] = u
+    if "consecutive" in b:
+        out["consecutive"] = 1 if b["consecutive"] else 0
+    if "sort" in b:
+        out["sort"] = to_int(b["sort"]) or 0
+    return out
+
+
+@app.post("/api/terms/<int:tid>/courses")
+@login_required
+def course_create(tid):
+    if not db().execute("SELECT 1 FROM terms WHERE id=?", (tid,)).fetchone():
+        return err("학기를 찾을 수 없습니다.", 404)
+    try:
+        d = clean_course(body())
+    except ValueError as e:
+        return err(str(e))
+    d.setdefault("sort", db().execute("SELECT COALESCE(MAX(sort),0)+1 FROM courses WHERE term_id=?", (tid,)).fetchone()[0])
+    d["term_id"] = tid
+    db().execute(f"INSERT INTO courses({','.join(d)}) VALUES({','.join('?' * len(d))})", list(d.values()))
+    db().commit()
+    return jsonify(ok=True, courses=courses_payload())
+
+
+@app.put("/api/courses/<int:cid>")
+@login_required
+def course_update(cid):
+    try:
+        d = clean_course(body(), partial=True)
+    except ValueError as e:
+        return err(str(e))
+    if not d:
+        return err("바꿀 내용이 없습니다.")
+    db().execute(f"UPDATE courses SET {','.join(k + '=?' for k in d)} WHERE id=?", [*d.values(), cid])
+    db().commit()
+    return jsonify(ok=True, courses=courses_payload())
+
+
+@app.delete("/api/courses/<int:cid>")
+@login_required
+def course_delete(cid):
+    db().execute("DELETE FROM institutions WHERE course_id=?", (cid,))
+    db().execute("DELETE FROM courses WHERE id=?", (cid,))
+    db().commit()
+    return jsonify(ok=True, courses=courses_payload(), institutions=institutions_payload())
+
+
+@app.post("/api/plan/import")
+@login_required
+def plan_import():
+    """실습 계획 양식(기간·기관 시트)을 한 번에 등록. 파일에 있는 학기의 교과목·기관은 파일 내용으로 바뀐다."""
+    b = body()
+    rows = b.get("rows") or []
+    periods = {(to_int(p.get("year")), to_int(p.get("grade")), to_int(p.get("sem"))): p.get("periods") or [] for p in (b.get("terms") or [])}
+    keys = []
+    for r in rows:
+        k = (to_int(r.get("year")), to_int(r.get("grade")), to_int(r.get("sem")))
+        if None in k or not str(r.get("course") or "").strip() or not str(r.get("inst") or "").strip():
+            continue
+        if k not in keys:
+            keys.append(k)
+    for k in periods:
+        if None not in k and k not in keys:
+            keys.append(k)
+    if not keys:
+        return err("파일에서 학기와 기관을 찾지 못했습니다. 양식의 열 이름을 확인하세요.")
+    summary = []
+    for (year, grade, sem) in keys:
+        year3 = year - (grade - 3)
+        kind = f"{grade}-{sem}"
+        co = db().execute("SELECT id FROM cohorts WHERE year3=?", (year3,)).fetchone()
+        cid = co[0] if co else create_cohort(db(), year3)
+        t = db().execute("SELECT id FROM terms WHERE cohort_id=? AND kind=?", (cid, kind)).fetchone()
+        if t:
+            tid = t[0]
+        else:
+            n = db().execute("SELECT COALESCE(MAX(sort),0)+1 FROM terms WHERE cohort_id=?", (cid,)).fetchone()[0]
+            tid = db().execute("INSERT INTO terms(label,periods,sort,cohort_id,kind) VALUES(?,?,?,?,?)",
+                               (term_label(year3, kind), "[]", n, cid, kind)).lastrowid
+        per = periods.get((year, grade, sem))
+        if per:
+            db().execute("UPDATE terms SET periods=? WHERE id=?",
+                         (json.dumps([str(x or "").strip() for x in (list(per) + ["", "", "", ""])[:4]], ensure_ascii=False), tid))
+        trows = [r for r in rows if (to_int(r.get("year")), to_int(r.get("grade")), to_int(r.get("sem"))) == (year, grade, sem)]
+        if not trows:
+            summary.append(f"{term_label(year3, kind)}: 기간만 반영")
+            continue
+        db().execute("DELETE FROM institutions WHERE course_id IN (SELECT id FROM courses WHERE term_id=?)", (tid,))
+        db().execute("DELETE FROM courses WHERE term_id=?", (tid,))
+        cmap, imap, ninst = {}, {}, 0
+        for r in trows:
+            cname = str(r["course"]).strip()
+            if cname not in cmap:
+                cmap[cname] = db().execute("INSERT INTO courses(term_id,name,units,consecutive,sort) VALUES(?,?,?,?,?)",
+                                           (tid, cname, max(1, min(4, to_int(r.get("units")) or 1)), 1 if r.get("consec") else 0, len(cmap) + 1)).lastrowid
+            iname = str(r["inst"]).strip()
+            caps = [max(0, to_int(x) or 0) for x in (list(r.get("caps") or []) + [0, 0, 0, 0])[:4]]
+            key = (cname, iname)
+            if key not in imap:
+                cur = db().execute("INSERT INTO institutions(course,course_id,name,short,kw,caps,grade,female,local,sort) VALUES('',?,?,?,?,?,?,?,?,?)",
+                                   (cmap[cname], iname, str(r.get("short") or "").strip() or iname.replace("병원", ""), str(r.get("kw") or "").strip(),
+                                    json.dumps(caps), 1 if r.get("grade_") else 0, 1 if r.get("female") else 0, 1 if r.get("local") else 0, len(imap) + 1))
+                imap[key] = [cur.lastrowid, caps]
+                ninst += 1
+            else:
+                old = imap[key][1]
+                imap[key][1] = [a + c for a, c in zip(old, caps)]
+                db().execute("UPDATE institutions SET caps=? WHERE id=?", (json.dumps(imap[key][1]), imap[key][0]))
+            ward = str(r.get("ward") or "").strip()
+            if ward and not db().execute("SELECT 1 FROM wards WHERE institution_id=? AND name=?", (imap[key][0], ward)).fetchone():
+                db().execute("INSERT INTO wards(institution_id,name,sort) VALUES(?,?,?)", (imap[key][0], ward, 0))
+        summary.append(f"{term_label(year3, kind)}: 교과목 {len(cmap)}개, 기관 {ninst}곳")
+    db().commit()
+    return jsonify(ok=True, summary=summary, cohorts=cohorts_payload(), terms=terms_payload(), courses=courses_payload(), institutions=institutions_payload())
+
+
 def cohorts_payload():
     return [dict(r) for r in db().execute("SELECT * FROM cohorts ORDER BY year3")]
 
@@ -373,7 +543,7 @@ def cohort_create():
         return err(f"{year3}년 3학년 기수가 이미 있습니다.")
     cid = create_cohort(db(), year3, str(body().get("name") or "").strip())
     db().commit()
-    return jsonify(ok=True, id=cid, cohorts=cohorts_payload(), terms=terms_payload())
+    return jsonify(ok=True, id=cid, cohorts=cohorts_payload(), terms=terms_payload(), courses=courses_payload())
 
 
 @app.put("/api/cohorts/<int:cid>")
@@ -420,6 +590,7 @@ def bootstrap():
         "canManage": can,
         "institutions": institutions_payload(),
         "cohorts": cohorts_payload(),
+        "courses": courses_payload(),
         "students": [dict(r) for r in db().execute("SELECT * FROM students ORDER BY student_no")],
         "terms": terms_payload(),
         "placements": [dict(r) for r in db().execute(
@@ -433,7 +604,7 @@ def bootstrap():
 
 
 # ---- institutions & wards
-INST_FIELDS = ("course", "name", "short", "kw", "caps", "grade", "female", "local", "sort")
+INST_FIELDS = ("course_id", "name", "short", "kw", "caps", "grade", "female", "local", "sort")
 
 
 def clean_inst(b, partial=False):
@@ -442,9 +613,10 @@ def clean_inst(b, partial=False):
         if k not in b:
             continue
         v = b[k]
-        if k == "course":
-            if v not in COURSES:
-                raise ValueError("과목을 선택하세요.")
+        if k == "course_id":
+            v = to_int(v)
+            if not v or not db().execute("SELECT 1 FROM courses WHERE id=?", (v,)).fetchone():
+                raise ValueError("교과목을 찾을 수 없습니다.")
         elif k in ("name", "short", "kw"):
             v = str(v or "").strip()
             if k == "name" and not v:
@@ -457,8 +629,8 @@ def clean_inst(b, partial=False):
         elif k == "sort":
             v = to_int(v) or 0
         out[k] = v
-    if not partial and ("course" not in out or "name" not in out):
-        raise ValueError("과목과 기관명이 필요합니다.")
+    if not partial and ("course_id" not in out or "name" not in out):
+        raise ValueError("교과목과 기관명이 필요합니다.")
     return out
 
 
@@ -471,6 +643,7 @@ def inst_create():
     except ValueError as e:
         return err(str(e))
     d.setdefault("short", d["name"].replace("병원", ""))
+    d["course"] = ""
     d.setdefault("caps", json.dumps([0, 0, 0, 0]))
     if "sort" not in d:
         d["sort"] = (db().execute("SELECT COALESCE(MAX(sort),0)+1 FROM institutions").fetchone()[0])

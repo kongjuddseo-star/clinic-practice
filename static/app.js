@@ -3,8 +3,7 @@
 const $=s=>document.querySelector(s);
 const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const S={students:[],institutions:[],terms:[],placements:[],weights:{...DEFAULT_W},users:[]};
-const ui={year:new Date().getFullYear(),grade:3,tab:'history',placeTerm:null,result:null,cfg:null,seed:1,view:'student',instCourse:'adult',pq:'',hq:'',hf:'all',sq:''};
-const COURSE_NAMES={adult:'성인간호학실습(2)',women:'여성건강간호학실습',child:'아동간호학실습'};
+const ui={year:new Date().getFullYear(),grade:3,tab:'history',placeTerm:null,result:null,cfg:null,seed:1,view:'student',instCourse:null,instTerm:null,pq:'',hq:'',hf:'all',sq:''};
 
 function toast(m){const t=$('#toast');t.textContent=m;t.hidden=false;clearTimeout(toast.t);toast.t=setTimeout(()=>t.hidden=true,3200);}
 async function api(method,url,data){
@@ -24,7 +23,12 @@ function shortInst(name){const k=instKey(name);const i=S.institutions.find(x=>in
 function shortAddr(a){const t=String(a||'').trim().split(/\s+/);return t.slice(0,2).join(' ');}
 function cShort(c){const m=String(c||'').match(/성인|노인|여성|모성|아동|정신|지역|관리/);return m?m[0]:(String(c||'').replace(/간호학실습|실습/g,'')||'실습');}
 function cClass(c){return /성인/.test(c)?'c-adult':/여성|모성/.test(c)?'c-women':/아동/.test(c)?'c-child':'c-other';}
-const courseOf=k=>COURSES.find(c=>c.key===k);
+const courseOf=k=>(ui.cfg&&ui.cfg.courses.find(c=>c.key===k))||{key:k,label:'',short:''};
+/* 학기 교과목 이름 → 짧은 이름: 성인간호학실습(2) → 성인(2) */
+function courseShort(name){const m=String(name||'').match(/^(.*?)(간호학실습|간호학|실습)?\s*(\(\d\))?$/);const base=(m&&m[1]||name).replace(/건강$/,'');return base+(m&&m[3]||'');}
+const termCourses=tid=>(S.courses||[]).filter(c=>c.term_id===tid).sort((a,b)=>a.sort-b.sort||a.id-b.id);
+/* 학기의 2주 단위 기간 수: 마지막으로 채워진 기간까지, 하나도 없으면 4 */
+function termN(T){let n=0;(T.periods||[]).forEach((p,i)=>{if(String(p||'').trim())n=i+1;});return n||4;}
 function tagHtml(tags){return tags.map(([c,t])=>`<span class="tag ${c}">${esc(t)}</span>`).join('');}
 function saveXlsx(wb,name){if(typeof XLSX==='undefined'){toast('엑셀 도구를 불러오지 못했습니다. 인터넷 연결을 확인하세요.');return;}XLSX.writeFile(wb,name);}
 const today=()=>new Date().toISOString().slice(0,10);
@@ -38,7 +42,7 @@ function saveUi(){try{localStorage.setItem('clinic-cohort',JSON.stringify({year:
 function loadUi(){try{const v=JSON.parse(localStorage.getItem('clinic-cohort')||'null');if(v&&v.year&&v.grade){ui.year=+v.year;ui.grade=+v.grade;}}catch(e){}}
 function yearsRange(){const ys=(S.cohorts||[]).map(c=>c.year3),now=new Date().getFullYear();const lo=Math.min(now,...ys),hi=Math.max(now+1,...ys.map(y=>y+1));const out=[];for(let y=lo;y<=hi;y++)out.push(y);return out;}
 function pickPlaceTerm(){const ts=sortedTerms();if(ts.some(t=>t.id===ui.placeTerm))return;const t=ts.find(t=>!t.count)||ts.slice(-1)[0];ui.placeTerm=t?t.id:null;}
-function onCohortChange(){saveUi();ui.result=null;ui.placeTerm=null;pickPlaceTerm();refreshDup();renderAll();}
+function onCohortChange(){saveUi();ui.result=null;ui.placeTerm=null;ui.instTerm=null;pickPlaceTerm();refreshDup();renderAll();}
 function renderCohortBar(){
   const c=C(),n=CS().length,y3=ui.grade===3?ui.year:ui.year-1;
   const desc=c?`${c.year3}년 3학년 1·2학기 → ${c.year3+1}년 4학년 1학기 · 학생 ${n}명`:'';
@@ -164,8 +168,10 @@ function exportHistory(){
 function placeTerm(){return sortedTerms().find(t=>t.id==ui.placeTerm);}
 function histTermsFor(T){return sortedTerms().filter(t=>t.id!==T.id&&(t.sort<T.sort||(t.sort===T.sort&&t.id<T.id)));}
 function buildCfg(T){
-  return {periods:[0,1,2,3].map(i=>T.periods[i]||`${i+1}기간`),w:{...DEFAULT_W,...S.weights},
-    insts:S.institutions.map(i=>({id:'i'+i.id,dbid:i.id,course:i.course,name:i.name,short:i.short||i.name,kw:i.kw,caps:i.caps,depts:'',deptArr:i.wards.map(w=>w.name),grade:i.grade,female:i.female,local:i.local}))};
+  const cs=termCourses(T.id);const N=termN(T);
+  return {periods:[...Array(N).keys()].map(i=>T.periods[i]||`${i+1}기간`),w:{...DEFAULT_W,...S.weights},
+    courses:cs.map(c=>({key:'c'+c.id,id:c.id,label:c.name,short:courseShort(c.name),units:c.units,consec:!!c.consecutive})),
+    insts:S.institutions.filter(i=>cs.some(c=>c.id===i.course_id)).map(i=>({id:'i'+i.id,dbid:i.id,course:'c'+i.course_id,name:i.name,short:i.short||i.name,kw:i.kw,caps:i.caps,depts:'',deptArr:i.wards.map(w=>w.name),grade:i.grade,female:i.female,local:i.local}))};
 }
 function runPlace(newSeed){
   const T=placeTerm();if(!T){toast('배치할 학기를 고르세요.');return;}
@@ -205,7 +211,7 @@ function renderPlace(){
       <button type="button" id="btnPlaceX" ${r?'':'disabled'}>엑셀로 저장</button></div>
     <p class="hint">반영하는 이전 학기: ${HT.length?HT.map(t=>`<b>${esc(t.label)}</b> (${t.count}건)`).join(', '):'없음'}. 이전 학기와 같은 기관·같은 병동은 절대 배치하지 않고, 같은 기관은 되도록 피합니다.
     ${T&&T.count?`<br><span style="color:var(--warn)">${esc(T.label)}에는 저장된 배치 ${T.count}건이 있습니다. 저장하면 새 결과로 바뀝니다.</span>`:''}
-    <br>자동 배치는 성인 4주(연속) + 여성 2주 + 아동 2주 구조를 따릅니다. 구조가 다른 학기는 ‘학기·이력 가져오기’에서 엑셀로 올려 관리하세요.</p>
+    <br>이 학기 구성: ${T?(termCourses(T.id).map(c=>`<b>${esc(c.name)}</b> 2주×${c.units}${c.units>1?(c.consecutive?'(연속·같은 기관)':'(따로)'):''}`).join(', ')||'교과목 없음 — 기관·병동 탭에서 등록하세요'):''} · 기간 ${T?termN(T):0}개</p>
     <details><summary style="cursor:pointer;font-weight:600">배치 기준 점수</summary>
       <div class="weights" style="margin-top:10px">
         ${wIn('grade','성적 우선 점수','<span>성적우선 기관에서 1등이 받는 점수(꼴찌 0)</span>')}
@@ -225,9 +231,9 @@ function renderPlace(){
   if(!r){pb.innerHTML=`<div class="panel empty">${CS().length?'‘배치 실행’을 누르면 결과가 여기에 나옵니다. 저장하기 전까지는 미리보기입니다.':'학생 명단이 비어 있습니다. ‘학생 명단’ 탭에서 먼저 올리세요.'}</div>`;return;}
   const s=r.stats,pct=x=>Math.round(x*100)+'%',nIss=r.issues.filter(i=>i.lv==='bad'||i.lv==='warn').length;
   pb.innerHTML=`<div class="metrics">
-    <div class="metric"><span class="k">배치 완료</span><span class="v">${s.placed} / ${s.n}명</span><span class="d">성인 4주 · 여성 2주 · 아동 2주</span></div>
-    <div class="metric"><span class="k">성적우선 기관 (성인)</span><span class="v">${s.gradeCount}명</span><span class="d">평균 ${Math.round(s.gradeAvg)}위 · 최하 ${s.gradeWorst}위</span></div>
-    <div class="metric"><span class="k">안동·영주 연고 만학도</span><span class="v">${s.strongIn} / ${s.strong}명</span><span class="d">지역 기관 성인 ${s.localIn}명 / ${s.localSeats}석</span></div>
+    <div class="metric"><span class="k">배치 완료</span><span class="v">${s.placed} / ${s.n}명</span><span class="d">${esc(ui.cfg.courses.map(c=>c.short).join(' · '))} 모두 배정</span></div>
+    <div class="metric"><span class="k">성적우선 기관 배치 학생</span><span class="v">${s.gradeCount}명</span><span class="d">평균 ${Math.round(s.gradeAvg)}위 · 최하 ${s.gradeWorst}위</span></div>
+    <div class="metric"><span class="k">지역 연고 만학도 → 지역 기관</span><span class="v">${s.strongIn} / ${s.strong}명</span><span class="d">지역 기관에 배치된 학생 ${s.localIn}명</span></div>
     <div class="metric"><span class="k">이전 학기와 같은 병동</span><span class="v">${s.hasHist?s.sameWard+'건':'–'}</span><span class="d">${s.hasHist?`같은 기관·다른 병동 ${s.sameInstN}명`:'반영할 이전 학기 이력 없음'}</span></div>
     <div class="metric"><span class="k">주소지 인근 배치</span><span class="v">${pct(s.addrRate)}</span><span class="d">지역 키워드가 있는 기관 기준</span></div>
   </div>
@@ -250,7 +256,7 @@ function studentView(r){
   const body=rows.map(({s,k})=>{
     const hc=r.histTerms.map((t,ti)=>{const hs=s.hist.filter(h=>h.termId===t.id).sort((a,b)=>a.seq-b.seq);return Array.from({length:TC[ti].n},(_,i)=>{const h=hs[i];
       return `<td class="${i===0?'gstart':''}">${h?`<span class="chip ${cClass(h.course)}"><b>${esc(cShort(h.course))}</b>${esc(shortInst(h.inst))}<small>${esc(h.ward)}</small></span>`:'<span class="t-empty">–</span>'}</td>`;}).join('');}).join('');
-    const cells=slots[k].map((x,i)=>`<td class="${i===0?'gstart':''}">`+(x?`<span class="chip c-${x.course}${x.prev?' prev':''}"${x.prev?' title="이전 학기와 같은 기관(다른 병동)"':''}><b>${courseOf(x.course).short}</b>${esc(x.inst.short)}<small>${esc(x.dept)}</small></span>`:'<span class="chip c-none">미배치</span>')+'</td>').join('');
+    const cells=slots[k].map((x,i)=>`<td class="${i===0?'gstart':''}">`+(x?`<span class="chip ${cClass(courseOf(x.course).label)}${x.prev?' prev':''}"${x.prev?' title="이전 학기와 같은 기관(다른 병동)"':''}><b>${courseOf(x.course).short}</b>${esc(x.inst.short)}<small>${esc(x.dept)}</small></span>`:'<span class="chip c-none">미배치</span>')+'</td>').join('');
     const tags=[];const seen=new Set();slots[k].forEach(x=>{if(!x)return;x.tags.forEach(t=>{const key=courseOf(x.course).short+t[1];if(t[0]==='fem'||seen.has(key))return;seen.add(key);tags.push([t[0],courseOf(x.course).short+' · '+t[1]]);});});
     return `<tr><td class="who"><div style="font-weight:600;white-space:nowrap">${disp(s)}</div><div class="mono" style="color:var(--muted);font-size:11.5px">${esc(s.id)}</div></td>
       <td class="info">${s.sex} · ${s.age}세<br>성적 <span class="mono">${s.gpa}</span> (${s.rank}위)<br><span title="${esc(s.addr)}">${esc(shortAddr(s.addr))}</span>${s.note?`<br><span style="color:var(--ink)">참고: ${esc(s.note)}</span>`:''}</td>${hc}${cells}<td style="min-width:180px">${tagHtml(tags)}</td></tr>`;}).join('');
@@ -261,13 +267,14 @@ function studentView(r){
   <div class="tblwrap"><table class="tl"><thead>${h1}${h2}</thead><tbody>${body||'<tr><td colspan="20" class="empty">찾는 학생이 없습니다.</td></tr>'}</tbody></table></div>`;
 }
 function instView(r){
-  const {st,slots}=r;
-  const seg=`<div class="seg" role="group" aria-label="과목" style="margin-bottom:12px">${COURSES.map(c=>`<button type="button" data-ic="${c.key}" aria-pressed="${ui.instCourse===c.key}">${c.label}</button>`).join('')}</div>`;
-  const cards=ui.cfg.insts.filter(i=>i.course===ui.instCourse).map(inst=>{
+  const {st,slots}=r;const PI=[...ui.cfg.periods.keys()];
+  const ic=ui.cfg.courses.some(c=>c.key===ui.instCourse)?ui.instCourse:(ui.cfg.courses[0]||{}).key;
+  const seg=`<div class="seg" role="group" aria-label="과목" style="margin-bottom:12px">${ui.cfg.courses.map(c=>`<button type="button" data-ic="${c.key}" aria-pressed="${ic===c.key}">${esc(c.label)}</button>`).join('')}</div>`;
+  const cards=ui.cfg.insts.filter(i=>i.course===ic).map(inst=>{
     const D=deptList(inst);
     const cell=(d,p)=>{const ks=slots.map((ss,k)=>k).filter(k=>slots[k][p]&&slots[k][p].inst===inst&&slots[k][p].dept===d);return ks.length?ks.map(k=>disp(st[k])).join('<br>'):'<span style="color:var(--muted)">–</span>';};
-    const rows=D.map(d=>`<tr><td style="font-weight:600;min-width:140px">${esc(d)}</td>${[0,1,2,3].map(p=>`<td class="names">${cell(d,p)}</td>`).join('')}</tr>`).join('');
-    const cnt=[0,1,2,3].map(p=>{const got=slots.filter(ss=>ss[p]&&ss[p].inst===inst).length,c=cap(inst,p);return `<td class="mono ${got<c?'fill-under':''}">${got} / ${c}명</td>`;}).join('');
+    const rows=D.map(d=>`<tr><td style="font-weight:600;min-width:140px">${esc(d)}</td>${PI.map(p=>`<td class="names">${cell(d,p)}</td>`).join('')}</tr>`).join('');
+    const cnt=PI.map(p=>{const got=slots.filter(ss=>ss[p]&&ss[p].inst===inst).length,c=cap(inst,p);return `<td class="mono ${got<c?'fill-under':''}">${got} / ${c}명</td>`;}).join('');
     const chips=[inst.grade?'<span class="tag grade">성적 우선</span>':'',inst.female?'<span class="tag fem">여학생만</span>':'',inst.local?'<span class="tag local">지역·만학도 우선</span>':'',kwList(inst).length?`<span class="tag">지역: ${esc(kwList(inst).join(', '))}</span>`:''].join('');
     return `<div class="inst"><div class="inst-h"><h3>${esc(inst.name)}</h3><span class="meta">${D.length}개 병동</span>${chips}</div>
     <div style="overflow-x:auto"><table><thead><tr><th>병동</th>${ui.cfg.periods.map((p,i)=>`<th>${i+1}기간<span class="pd">${esc(p)}</span></th>`).join('')}</tr></thead><tbody>${rows}</tbody><tfoot><tr><td>배정 / 정원</td>${cnt}</tr></tfoot></table></div></div>`;}).join('');
@@ -289,13 +296,14 @@ function exportPlace(){
       ...slots[k].map(x=>x?`${courseOf(x.course).short} / ${x.inst.name} / ${x.dept}`:'미배치'),tags.join(', ')];});
   const ws=XLSX.utils.aoa_to_sheet([head,...rows]);ws['!cols']=head.map(h=>({wch:/기간|차$/.test(h)?32:h==='반영된 조건'?40:h==='주소'||h==='참고'?22:10}));
   XLSX.utils.book_append_sheet(wb,ws,'학생별 배치');
-  COURSES.forEach(c=>{
+  const PI=[...P.keys()];
+  ui.cfg.courses.forEach(c=>{
     const aoa=[['기관','병동',...P.map((p,i)=>`${i+1}기간 (${p})`)]];
     ui.cfg.insts.filter(i=>i.course===c.key).forEach(inst=>{
-      deptList(inst).forEach(d=>aoa.push([inst.name,d,...[0,1,2,3].map(p=>slots.map((ss,k)=>k).filter(k=>slots[k][p]&&slots[k][p].inst===inst&&slots[k][p].dept===d).map(k=>disp(st[k],false)).join('\n'))]));
-      aoa.push([inst.name,'배정 / 정원',...[0,1,2,3].map(p=>`${slots.filter(ss=>ss[p]&&ss[p].inst===inst).length} / ${cap(inst,p)}`)]);});
+      deptList(inst).forEach(d=>aoa.push([inst.name,d,...PI.map(p=>slots.map((ss,k)=>k).filter(k=>slots[k][p]&&slots[k][p].inst===inst&&slots[k][p].dept===d).map(k=>disp(st[k],false)).join('\n'))]));
+      aoa.push([inst.name,'배정 / 정원',...PI.map(p=>`${slots.filter(ss=>ss[p]&&ss[p].inst===inst).length} / ${cap(inst,p)}`)]);});
     const w2=XLSX.utils.aoa_to_sheet(aoa);w2['!cols']=[{wch:18},{wch:20},{wch:24},{wch:24},{wch:24},{wch:24}];
-    XLSX.utils.book_append_sheet(wb,w2,c.label.replace(/[\\/?*[\]:]/g,''));});
+    XLSX.utils.book_append_sheet(wb,w2,c.label.replace(/[\\/?*[\]:]/g,'').slice(0,31));});
   const lv={bad:'해결 필요',warn:'확인',info:'참고',ok:'충족'};
   const w3=XLSX.utils.aoa_to_sheet([['구분','내용','상세'],...r.issues.map(i=>[lv[i.lv],i.msg,i.detail||''])]);w3['!cols']=[{wch:10},{wch:70},{wch:90}];
   XLSX.utils.book_append_sheet(wb,w3,'점검');
@@ -396,38 +404,71 @@ function parseStudentRows(rows){
   return out.length?out:'학생 행이 없습니다.';
 }
 
-/* ---------- 기관·병동 ---------- */
+/* ---------- 기관·병동 (학기별 교과목 → 기관 → 병동) ---------- */
+function instTerm(){const ts=sortedTerms();let t=ts.find(t=>t.id===ui.instTerm);if(!t){t=ts.find(t=>t.id===ui.placeTerm)||ts[0];ui.instTerm=t?t.id:null;}return t||null;}
 function renderInsts(){
-  const el=$('#tab-insts');
-  el.innerHTML=`<p class="hint">기관과 병동을 고치면 바로 저장됩니다. 정원은 자동 배치하는 학기의 1~4기간 인원입니다. 지역 키워드는 학생 주소에 그 글자가 들어 있으면 같은 지역으로 봅니다.</p>
-  ${COURSES.map(c=>`<div class="panel stack">
-    <div class="course-h"><i class="dot" style="background:var(--${c.key})"></i><h2>${c.label}</h2><span class="spacer"></span>
-      <form class="addward" data-addinst="${c.key}"><input id="ni-${c.key}" placeholder="새 기관 이름" aria-label="새 기관 이름"><button type="submit">기관 추가</button></form></div>
-    ${S.institutions.filter(i=>i.course===c.key).map(instCard).join('')||'<p class="hint">기관이 없습니다.</p>'}
-  </div>`).join('')}`;
+  const el=$('#tab-insts');if(noCohort(el))return;
+  const T=instTerm();const ts=sortedTerms();
+  const cs=T?termCourses(T.id):[];const N=T?termN(T):4;
+  el.innerHTML=`<div class="panel stack">
+    <h2>실습 계획 엑셀 올리기</h2>
+    <p class="hint">학년도·학년·학기별 기간, 교과목, 기관, 정원을 정리한 계획 양식을 올리면 한꺼번에 등록됩니다. 파일에 있는 학기의 교과목과 기관은 파일 내용으로 바뀝니다(학생 배치 이력은 그대로). 파일에 다른 학년도·학년이 섞여 있어도 각 기수의 학기로 나눠 들어갑니다.</p>
+    <div class="row"><label class="btn primary" for="planFile">계획 엑셀 올리기</label><input id="planFile" type="file" accept=".xlsx,.xls" hidden><button type="button" id="btnPlanTpl">계획 양식 받기</button><span class="hint" id="planMsg"></span></div>
+  </div>
+  <div class="cohortbar"><label for="instTermSel"><b>학기</b></label><select id="instTermSel">${ts.map(t=>`<option value="${t.id}" ${T&&t.id===T.id?'selected':''}>${esc(t.label)}</option>`).join('')}</select>
+    <span class="cohort-desc">${T?`기간 ${N}개: ${[...Array(N).keys()].map(i=>esc(T.periods[i]||`${i+1}차`)).join(' · ')}`:''}</span></div>
+  ${T?`<div class="panel stack"><h2>교과목</h2>
+    <p class="hint">학생 한 명이 그 과목을 2주씩 몇 번 하는지(2주 단위 수)와, 여러 번이면 연달아 같은 기관에서 하는지(연속)를 정합니다. 예: 3학년 2학기 성인 4주 연속 = 2회·연속, 3학년 1학기 성인 = 2회·따로.</p>
+    <div class="tblwrap"><table><thead><tr><th>교과목</th><th>2주 단위 수</th><th>연속·같은 기관</th><th>기관</th><th>기간별 정원 합계</th><th></th></tr></thead><tbody>
+    ${cs.map(c=>{const I=S.institutions.filter(i=>i.course_id===c.id);const sums=[...Array(N).keys()].map(p=>I.reduce((a,i)=>a+(+i.caps[p]||0),0));
+      return `<tr><td><input id="cn-${c.id}" data-cid="${c.id}" data-cf="name" value="${esc(c.name)}" style="min-width:180px"></td>
+      <td><input id="cu-${c.id}" type="number" min="1" max="4" data-cid="${c.id}" data-cf="units" value="${c.units}" style="width:64px"></td>
+      <td><input type="checkbox" id="cc-${c.id}" data-cid="${c.id}" data-cf="consecutive" ${c.consecutive?'checked':''} aria-label="연속"></td>
+      <td class="num mono">${I.length}곳</td><td class="mono">${sums.join(' / ')}</td>
+      <td><button type="button" class="ghost danger" data-cdel="${c.id}">교과목 삭제</button></td></tr>`;}).join('')||'<tr><td colspan="6" class="empty">교과목이 없습니다.</td></tr>'}
+    </tbody></table></div>
+    <form id="addCourse" class="addward"><input id="nc-name" placeholder="새 교과목 이름" aria-label="새 교과목 이름" style="width:220px"><button type="submit">교과목 추가</button></form>
+  </div>
+  <p class="hint">기관과 병동을 고치면 바로 저장됩니다. 정원은 이 학기의 기간별 인원입니다. 병동을 등록하지 않으면 기관 단위로만 배치하고, 이전 학기와 같은 병동 피하기는 병동이 있어야 적용됩니다.</p>
+  ${cs.map(c=>`<div class="panel stack">
+    <div class="course-h"><i class="dot" style="background:var(--${({'c-adult':'adult','c-women':'women','c-child':'child'})[cClass(c.name)]||'muted'})"></i><h2>${esc(c.name)}</h2><span class="spacer"></span>
+      <form class="addward" data-addinst="${c.id}"><input id="ni-${c.id}" placeholder="새 기관 이름" aria-label="새 기관 이름"><button type="submit">기관 추가</button></form></div>
+    ${S.institutions.filter(i=>i.course_id===c.id).map(i=>instCard(i,T,N)).join('')||'<p class="hint">기관이 없습니다.</p>'}
+  </div>`).join('')}`:''}`;
+  $('#instTermSel').onchange=e=>{ui.instTerm=+e.target.value;renderInsts();};
+  $('#planFile').onchange=e=>{if(e.target.files[0])readPlanFile(e.target.files[0]);e.target.value='';};
+  $('#btnPlanTpl').onclick=savePlanTemplate;
+  if(!T)return;
+  el.querySelectorAll('[data-cf]').forEach(x=>x.onchange=async()=>{const v=x.type==='checkbox'?x.checked:x.value;
+    const j=await act(()=>api('PUT',`/api/courses/${x.dataset.cid}`,{[x.dataset.cf]:v}),'저장했습니다.');if(j){S.courses=j.courses;renderInsts();}else renderInsts();});
+  el.querySelectorAll('[data-cdel]').forEach(b=>b.onclick=async()=>{const c=S.courses.find(c=>c.id===+b.dataset.cdel);const n=S.institutions.filter(i=>i.course_id===c.id).length;
+    if(!confirm(`${c.name}과 그 기관 ${n}곳을 지웁니다. 계속할까요?`))return;
+    const j=await act(()=>api('DELETE',`/api/courses/${c.id}`),`${c.name}을(를) 지웠습니다.`);if(j){S.courses=j.courses;S.institutions=j.institutions;renderInsts();}});
+  $('#addCourse').onsubmit=async e=>{e.preventDefault();const name=$('#nc-name').value.trim();if(!name)return;
+    const j=await act(()=>api('POST',`/api/terms/${T.id}/courses`,{name,units:1,consecutive:false}),`${name}을(를) 추가했습니다.`);if(j){S.courses=j.courses;renderInsts();}};
   el.querySelectorAll('[data-addinst]').forEach(f=>f.onsubmit=async e=>{e.preventDefault();const inp=f.querySelector('input');const name=inp.value.trim();if(!name)return;
-    const j=await act(()=>api('POST','/api/institutions',{course:f.dataset.addinst,name}),`${name}을(를) 추가했습니다. 정원과 병동을 입력하세요.`);if(j){S.institutions=j.institutions;renderInsts();}});
+    const j=await act(()=>api('POST','/api/institutions',{course_id:+f.dataset.addinst,name}),`${name}을(를) 추가했습니다. 정원과 병동을 입력하세요.`);if(j){S.institutions=j.institutions;renderInsts();}});
   el.querySelectorAll('[data-if]').forEach(x=>x.onchange=async()=>{
     const id=+x.dataset.iid,f=x.dataset.if;const inst=S.institutions.find(i=>i.id===id);let v;
-    if(f==='cap'){v=inst.caps.slice();v[+x.dataset.p]=+x.value||0;}else if(x.type==='checkbox')v=x.checked;else v=x.value;
+    if(f==='cap'){v=inst.caps.slice();while(v.length<4)v.push(0);v[+x.dataset.p]=+x.value||0;}else if(x.type==='checkbox')v=x.checked;else v=x.value;
     const j=await act(()=>api('PUT',`/api/institutions/${id}`,{[f==='cap'?'caps':f]:v}));
     if(j){S.institutions=j.institutions;x.classList.remove('saved');void x.offsetWidth;x.classList.add('saved');}
   });
   el.querySelectorAll('[data-delinst]').forEach(b=>b.onclick=async()=>{const id=+b.dataset.delinst;const i=S.institutions.find(x=>x.id===id);
-    if(!confirm(`${i.name}(${courseOf(i.course).short})과 병동 ${i.wards.length}개를 지웁니다. 저장된 학생 배치 이력은 그대로 남습니다. 계속할까요?`))return;
+    if(!confirm(`${i.name}과 병동 ${i.wards.length}개를 지웁니다. 저장된 학생 배치 이력은 그대로 남습니다. 계속할까요?`))return;
     const j=await act(()=>api('DELETE',`/api/institutions/${id}`),`${i.name}을(를) 지웠습니다.`);if(j){S.institutions=j.institutions;renderInsts();}});
   el.querySelectorAll('[data-addw]').forEach(f=>f.onsubmit=async e=>{e.preventDefault();const inp=f.querySelector('input');const name=inp.value.trim();if(!name)return;
     const j=await act(()=>api('POST',`/api/institutions/${f.dataset.addw}/wards`,{name}),`${name} 병동을 추가했습니다.`);if(j){S.institutions=j.institutions;renderInsts();const n=document.getElementById(inp.id);if(n)n.focus();}});
   el.querySelectorAll('[data-delw]').forEach(b=>b.onclick=async()=>{
     const j=await act(()=>api('DELETE',`/api/wards/${b.dataset.delw}`),`${b.dataset.name} 병동을 지웠습니다.`);if(j){S.institutions=j.institutions;renderInsts();}});
 }
-function instCard(i){
+function instCard(i,T,N){
   return `<div class="inst-card">
     <div class="inst-grid">
       <label for="in-${i.id}">기관명<input id="in-${i.id}" data-iid="${i.id}" data-if="name" value="${esc(i.name)}"></label>
       <label for="is-${i.id}">약칭<input id="is-${i.id}" data-iid="${i.id}" data-if="short" value="${esc(i.short)}"></label>
       <label for="ik-${i.id}">지역 키워드<input id="ik-${i.id}" data-iid="${i.id}" data-if="kw" value="${esc(i.kw)}" placeholder="예: 안동, 영주"></label>
-      ${[0,1,2,3].map(p=>`<label for="ic-${i.id}-${p}">${p+1}기간<input id="ic-${i.id}-${p}" type="number" min="0" data-iid="${i.id}" data-if="cap" data-p="${p}" value="${i.caps[p]}"></label>`).join('')}
+      ${[0,1,2,3].map(p=>`<label for="ic-${i.id}-${p}" ${p>=N?'hidden':''}>${p+1}차${T.periods[p]?' '+esc(T.periods[p]).slice(0,5):''}<input id="ic-${i.id}-${p}" type="number" min="0" data-iid="${i.id}" data-if="cap" data-p="${p}" value="${i.caps[p]||0}"></label>`).join('')}
     </div>
     <div class="flags">
       <label><input type="checkbox" id="ig-${i.id}" data-iid="${i.id}" data-if="grade" ${i.grade?'checked':''}>성적 우선</label>
@@ -436,10 +477,55 @@ function instCard(i){
       <span class="spacer"></span><button type="button" class="ghost danger" data-delinst="${i.id}">기관 삭제</button>
     </div>
     <div class="wards"><span class="hint" style="margin-right:4px">병동</span>
-      ${i.wards.map(w=>`<span class="ward">${esc(w.name)}<button type="button" data-delw="${w.id}" data-name="${esc(w.name)}" aria-label="${esc(w.name)} 삭제" title="삭제">×</button></span>`).join('')||'<span class="hint">병동이 없습니다</span>'}
+      ${i.wards.map(w=>`<span class="ward">${esc(w.name)}<button type="button" data-delw="${w.id}" data-name="${esc(w.name)}" aria-label="${esc(w.name)} 삭제" title="삭제">×</button></span>`).join('')||'<span class="hint">병동 미정</span>'}
       <form class="addward" data-addw="${i.id}"><input id="aw-${i.id}" placeholder="병동 추가" aria-label="${esc(i.name)} 병동 추가"><button type="submit">추가</button></form>
     </div>
   </div>`;
+}
+/* 실습 계획 양식 읽기: [기간] 시트(학년도·학년·학기·1~4차 기간), [기관] 시트(학년도·학년·학기·교과목·2주 단위 수·연속·기관·약칭·병동·1~4차·성적우선·여학생만·지역우선·지역) */
+function readPlanFile(file){
+  if(typeof XLSX==='undefined'){toast('엑셀 도구를 불러오지 못했습니다.');return;}
+  const fr=new FileReader();
+  fr.onload=async()=>{
+    let terms=[],rows=[];
+    try{
+      const wb=XLSX.read(new Uint8Array(fr.result),{type:'array'});
+      wb.SheetNames.forEach(n=>{
+        const data=XLSX.utils.sheet_to_json(wb.Sheets[n],{header:1,raw:false,defval:''});
+        const hi=data.slice(0,10).findIndex(r=>r.some(c=>/학년도/.test(String(c)))&&r.some(c=>/^학기$/.test(String(c).trim())));if(hi<0)return;
+        const h=data[hi].map(c=>String(c).replace(/\s+/g,'').trim());const f=re=>h.findIndex(c=>re.test(c));
+        const cY=f(/^학년도$/),cG=f(/^학년$/),cS=f(/^학기$/),capC=[1,2,3,4].map(k=>f(new RegExp('^'+k+'차$'))),perC=[1,2,3,4].map(k=>f(new RegExp('^'+k+'차기간$')));
+        const yes=v=>/^(o|ㅇ|y|예|1|v|✓|true)$/i.test(String(v||'').trim());
+        const cell=(r,i)=>i>=0?String(r[i]??'').trim():'';
+        if(f(/^기관$/)>=0&&f(/^교과목$/)>=0){
+          const cC=f(/^교과목$/),cU=f(/단위/),cX=f(/^연속/),cI=f(/^기관$/),cSh=f(/^약칭$/),cW=f(/^병동$/),cG2=f(/성적/),cF=f(/여학생/),cL=f(/지역우선/),cK=f(/^지역$/);
+          data.slice(hi+1).forEach(r=>{if(!cell(r,cI)||!cell(r,cC))return;
+            rows.push({year:cell(r,cY),grade:cell(r,cG),sem:cell(r,cS),course:cell(r,cC),units:cell(r,cU)||1,consec:yes(cell(r,cX)),inst:cell(r,cI),short:cell(r,cSh),ward:cell(r,cW),
+              caps:capC.map(i=>parseInt(cell(r,i).replace(/[^0-9]/g,''))||0),grade_:yes(cell(r,cG2)),female:yes(cell(r,cF)),local:yes(cell(r,cL)),kw:cell(r,cK)});});
+        }else if(perC.some(i=>i>=0)){
+          data.slice(hi+1).forEach(r=>{if(!cell(r,cY))return;terms.push({year:cell(r,cY),grade:cell(r,cG),sem:cell(r,cS),periods:perC.map(i=>cell(r,i))});});
+        }
+      });
+    }catch(e){toast('파일을 읽지 못했습니다: '+e.message);return;}
+    if(!rows.length){toast('[기관] 시트를 찾지 못했습니다. ‘계획 양식 받기’의 열 이름을 확인하세요.');return;}
+    const keys=[...new Set(rows.map(r=>`${r.year}학년도 ${r.grade}학년 ${r.sem}학기`))];
+    if(!confirm(`다음 학기의 교과목과 기관을 파일 내용으로 바꿉니다.\n\n${keys.join('\n')}\n\n계속할까요?`))return;
+    const j=await act(()=>api('POST','/api/plan/import',{terms,rows}),'계획을 등록했습니다.');
+    if(j){Object.assign(S,{cohorts:j.cohorts,terms:j.terms,courses:j.courses,institutions:j.institutions});$('#planMsg')&&($('#planMsg').textContent=j.summary.join(' / '));renderAll();const m=$('#planMsg');if(m)m.textContent=j.summary.join(' / ');}
+  };
+  fr.readAsArrayBuffer(file);
+}
+function savePlanTemplate(){
+  if(typeof XLSX==='undefined')return;
+  const wb=XLSX.utils.book_new();
+  const p=XLSX.utils.aoa_to_sheet([['학년도','학년','학기','1차 기간','2차 기간','3차 기간','4차 기간'],[2027,4,1,'04/12-04/23','04/26-05/07','05/10-05/21','05/24-06/04']]);
+  const i=XLSX.utils.aoa_to_sheet([['학년도','학년','학기','교과목','2주 단위 수','연속','기관','약칭','병동','1차','2차','3차','4차','성적우선','여학생만','지역우선','지역','비고'],
+    [2027,4,1,'성인간호학실습(3)',1,'','강동경희대학교병원','강동경희','',0,8,8,8,'O','','','서울','예시 행입니다. 지우고 쓰세요'],
+    [2027,3,2,'성인간호학실습(2)',2,'O','이대서울병원','이대서울','93병동',4,4,4,4,'O','','','서울','병동별로 적으면 같은 기관 줄의 인원이 합쳐집니다']]);
+  p['!cols']=[{wch:8},{wch:6},{wch:6},{wch:14},{wch:14},{wch:14},{wch:14}];
+  i['!cols']=[{wch:8},{wch:6},{wch:6},{wch:20},{wch:11},{wch:6},{wch:24},{wch:12},{wch:12},{wch:6},{wch:6},{wch:6},{wch:6},{wch:8},{wch:8},{wch:8},{wch:12},{wch:40}];
+  XLSX.utils.book_append_sheet(wb,p,'기간');XLSX.utils.book_append_sheet(wb,i,'기관');
+  saveXlsx(wb,'실습계획_양식.xlsx');
 }
 
 /* ---------- 학기·이력 가져오기 ---------- */
