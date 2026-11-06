@@ -35,8 +35,22 @@ async function boot(){
   try{Object.assign(S,await api('GET','/api/bootstrap'));}
   catch(e){$('#tab-history').innerHTML=`<div class="panel"><div class="errbox">${esc(e.message)}</div></div>`;return;}
   $('#storageWarn').hidden=!!S.persistent;$('#tabUsers').hidden=!S.canManage;
+  if(S.me.must_change){forcePw();return;}
   if(!ui.placeTerm){const t=sortedTerms().find(t=>!t.count)||sortedTerms().slice(-1)[0];ui.placeTerm=t?t.id:null;}
   refreshDup();renderAll();
+}
+function forcePw(){
+  document.querySelector('nav.tabs').hidden=true;['history','place','students','insts','terms','users'].forEach(t=>$('#tab-'+t).hidden=true);
+  const box=document.createElement('section');box.className='panel stack';box.style.maxWidth='460px';
+  box.innerHTML=`<h2>새 비밀번호를 정하세요</h2><p class="hint">${esc(S.me.name)}(${esc(S.me.role)}) 계정의 첫 로그인입니다. 받은 처음 비밀번호를 본인만 아는 비밀번호로 바꿔야 쓸 수 있습니다.</p>
+    <form id="fpw" class="stack"><label for="fp-cur" class="hint">처음 비밀번호<input id="fp-cur" type="password" autocomplete="current-password" required></label>
+    <label for="fp-new" class="hint">새 비밀번호 (8자 이상)<input id="fp-new" type="password" autocomplete="new-password" minlength="8" required></label>
+    <label for="fp-new2" class="hint">새 비밀번호 확인<input id="fp-new2" type="password" autocomplete="new-password" minlength="8" required></label>
+    <button class="primary" type="submit">비밀번호 바꾸고 시작하기</button></form>`;
+  document.querySelector('.wrap').appendChild(box);
+  $('#fpw').onsubmit=async e=>{e.preventDefault();if($('#fp-new').value!==$('#fp-new2').value){toast('새 비밀번호가 서로 다릅니다.');return;}
+    const j=await act(()=>api('PUT','/api/me/password',{current:$('#fp-cur').value,new:$('#fp-new').value}),'비밀번호를 바꿨습니다.');
+    if(j){box.remove();document.querySelector('nav.tabs').hidden=false;S.me.must_change=0;document.querySelector('[data-tab=history]').click();boot();}};
 }
 function renderAll(){renderHistory();renderPlace();renderStudents();renderInsts();renderTerms();renderUsers();}
 document.querySelectorAll('[role=tab]').forEach(b=>b.onclick=()=>{
@@ -509,11 +523,11 @@ function renderUsers(){
   const el=$('#tab-users');if(!S.canManage){el.innerHTML='';return;}
   const roleSel=(id,val,attr='')=>`<select id="${id}" ${attr}>${S.roles.map(r=>`<option ${r===val?'selected':''}>${r}</option>`).join('')}</select>`;
   el.innerHTML=`<div class="panel stack"><h2>계정 추가</h2>
-    <p class="hint">이 사이트는 학부장, 임상실습학과장, 임상실습주임교수, 임상실습직원만 쓸 수 있습니다. 계정 추가·삭제는 학부장, 임상실습학과장, 임상실습주임교수가 합니다. 처음 비밀번호를 알려 주고, 받은 사람이 ‘비밀번호 변경’으로 바꾸게 하세요.</p>
+    <p class="hint">이 사이트는 학부장, 임상산학학과장, 임상실습주임교수, 임상실습행정직원만 쓸 수 있습니다. 계정은 직위별로 두고, <b>발령으로 사람이 바뀌면 아래 표에서 이름을 고치고 비밀번호를 초기화</b>하세요. 초기화한 비밀번호로 처음 로그인하면 새 비밀번호를 정하게 됩니다. 계정 추가·삭제는 학부장, 임상산학학과장, 임상실습주임교수가 합니다.</p>
     <form id="addUser" class="grid-form">
       <label for="u-login">아이디<input id="u-login" required autocomplete="off"></label>
       <label for="u-name">이름<input id="u-name" required></label>
-      <label for="u-role">직위${roleSel('u-role','임상실습직원')}</label>
+      <label for="u-role">직위${roleSel('u-role','임상실습행정직원')}</label>
       <label for="u-pw">처음 비밀번호 (8자 이상)<input id="u-pw" type="text" required minlength="8" autocomplete="off"></label>
       <button type="submit" class="primary">계정 추가</button></form></div>
   <div class="tblwrap"><table><thead><tr><th>아이디</th><th>이름</th><th>직위</th><th>만든 날</th><th></th></tr></thead><tbody>

@@ -37,9 +37,9 @@
 | 직위 | 배치·명단·기관 관리 | 계정 관리 |
 |---|---|---|
 | 학부장 | O | O |
-| 임상실습학과장 | O | O |
+| 임상산학학과장 | O | O |
 | 임상실습주임교수 | O | O |
-| 임상실습직원 | O | – |
+| 임상실습행정직원 | O | – |
 
 ## Railway 배포
 
@@ -51,13 +51,12 @@
 |---|---|---|
 | `DATA_DIR` | `/data` | 데이터베이스 위치(Volume 경로와 같게) |
 | `SECRET_KEY` | 긴 임의 문자열 | 로그인 세션 암호화 |
-| `ADMIN_LOGIN` | 예: `admin` | 첫 계정 아이디 |
-| `ADMIN_PASSWORD` | 8자 이상 | 첫 계정 비밀번호 (계정이 하나도 없을 때만 사용) |
-| `ADMIN_NAME` | 예: 홍길동 | 첫 계정 이름 |
-| `ADMIN_ROLE` | `임상실습주임교수` 등 | 첫 계정 직위 |
+| `INIT_ACCOUNTS` | `dean\|학부장\|이름;chair\|임상산학학과장\|이름;professor\|임상실습주임교수\|이름;staff\|임상실습행정직원\|이름` | 처음 만들 직위별 계정(아이디\|직위\|이름). 계정이 하나도 없을 때만 사용 |
+| `INIT_PASSWORD` | 8자 이상 | 위 계정들의 처음 비밀번호. 처음 로그인하면 각자 바꿔야 함 |
 
 4. **Settings → Networking → Generate Domain**으로 주소를 만듭니다.
-5. 첫 계정으로 로그인한 뒤 ‘비밀번호 변경’으로 비밀번호를 바꾸고, ‘계정 관리’에서 다른 사람 계정을 만듭니다.
+5. 각 직위 계정으로 처음 로그인하면 새 비밀번호를 정하는 화면이 나옵니다.
+6. 발령으로 사람이 바뀌면 ‘계정 관리’에서 그 직위 계정의 이름을 고치고 비밀번호를 초기화합니다.
 
 시작 명령과 상태 확인 경로는 `railway.json`에 있습니다(`gunicorn`, `/healthz`).
 
@@ -72,7 +71,7 @@
 
 ```bash
 pip install -r requirements.txt
-ADMIN_PASSWORD=testpass123 python app.py   # http://localhost:5000, 아이디 admin
+INIT_PASSWORD=testpass123 python app.py   # http://localhost:5000, 아이디 admin (처음 로그인 때 비밀번호 변경)
 ```
 
 데이터는 `data/clinic.db`에 저장됩니다(저장소에는 올라가지 않음).

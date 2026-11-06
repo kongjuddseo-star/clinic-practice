@@ -1,7 +1,8 @@
 """간호학과 임상실습 배치 관리 서버.
 
 - 데이터: SQLite (DATA_DIR/clinic.db). Railway에서는 Volume을 DATA_DIR에 연결한다.
-- 접근: 학부장, 임상실습학과장, 임상실습주임교수, 임상실습직원 계정만 로그인할 수 있다.
+- 접근: 학부장, 임상산학학과장, 임상실습주임교수, 임상실습행정직원 계정만 로그인할 수 있다.
+- 계정은 직위별로 두고, 발령으로 사람이 바뀌면 이름을 고치고 비밀번호를 초기화한다.
 """
 import datetime
 import functools
@@ -14,9 +15,11 @@ import time
 from flask import Flask, g, jsonify, redirect, render_template, request, session, Response
 from werkzeug.security import check_password_hash, generate_password_hash
 
-ROLES = ["학부장", "임상실습학과장", "임상실습주임교수", "임상실습직원"]
+ROLES = ["학부장", "임상산학학과장", "임상실습주임교수", "임상실습행정직원"]
+# 이전 이름 → 현재 이름
+ROLE_RENAMES = {"임상실습학과장": "임상산학학과장", "임상실습직원": "임상실습행정직원"}
 # 계정을 만들고 지울 수 있는 직위
-MANAGER_ROLES = {"학부장", "임상실습학과장", "임상실습주임교수"}
+MANAGER_ROLES = {"학부장", "임상산학학과장", "임상실습주임교수"}
 COURSES = ["adult", "women", "child"]
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -58,7 +61,8 @@ app.config.update(
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS users(
   id INTEGER PRIMARY KEY, login_id TEXT UNIQUE NOT NULL, name TEXT NOT NULL,
-  role TEXT NOT NULL, pw_hash TEXT NOT NULL, created_at TEXT DEFAULT CURRENT_TIMESTAMP);
+  role TEXT NOT NULL, pw_hash TEXT NOT NULL, must_change INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP);
 CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS institutions(
   id INTEGER PRIMARY KEY, course TEXT NOT NULL, name TEXT NOT NULL, short TEXT NOT NULL DEFAULT '',
@@ -116,6 +120,29 @@ SEED_TERMS = [
 DEFAULT_WEIGHTS = {"grade": 80, "local": 100, "age": 60, "addr": 30, "ageCut": 35, "same": 50}
 
 
+def initial_accounts():
+    """첫 시작 때 만들 계정.
+
+    INIT_ACCOUNTS = "아이디|직위|이름;아이디|직위|이름;..." 와 INIT_PASSWORD(처음 비밀번호, 모두 같음).
+    처음 로그인하면 각자 비밀번호를 바꿔야 한다. 예전 방식(ADMIN_LOGIN/ADMIN_PASSWORD)도 받는다.
+    """
+    pw = os.environ.get("INIT_PASSWORD") or os.environ.get("ADMIN_PASSWORD")
+    if not pw:
+        return []
+    out = []
+    for part in (os.environ.get("INIT_ACCOUNTS") or "").split(";"):
+        bits = [b.strip() for b in part.split("|")]
+        if len(bits) >= 2 and bits[0]:
+            role = ROLE_RENAMES.get(bits[1], bits[1])
+            if role in ROLES:
+                out.append((bits[0], role, bits[2] if len(bits) > 2 and bits[2] else role, pw))
+    if not out:
+        role = ROLE_RENAMES.get(os.environ.get("ADMIN_ROLE", ""), os.environ.get("ADMIN_ROLE", ""))
+        out.append((os.environ.get("ADMIN_LOGIN", "admin").strip(), role if role in ROLES else "임상실습주임교수",
+                    os.environ.get("ADMIN_NAME", "관리자"), pw))
+    return out
+
+
 def init_db():
     con = sqlite3.connect(DB_PATH, timeout=30)
     con.isolation_level = None
@@ -135,15 +162,15 @@ def init_db():
                 con.execute("INSERT OR IGNORE INTO terms(label,periods,sort) VALUES(?,?,?)", (label, json.dumps(periods, ensure_ascii=False), sort))
             con.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('weights',?)", (json.dumps(DEFAULT_WEIGHTS),))
             con.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('seeded','1')")
+        cols = [r[1] for r in con.execute("PRAGMA table_info(users)")]
+        if "must_change" not in cols:
+            con.execute("ALTER TABLE users ADD COLUMN must_change INTEGER NOT NULL DEFAULT 0")
+        for old, new in ROLE_RENAMES.items():
+            con.execute("UPDATE users SET role=? WHERE role=?", (new, old))
         if con.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 0:
-            login = os.environ.get("ADMIN_LOGIN", "admin").strip()
-            pw = os.environ.get("ADMIN_PASSWORD")
-            if pw:
-                role = os.environ.get("ADMIN_ROLE", "임상실습주임교수")
-                if role not in ROLES:
-                    role = "임상실습주임교수"
-                con.execute("INSERT INTO users(login_id,name,role,pw_hash) VALUES(?,?,?,?)",
-                            (login, os.environ.get("ADMIN_NAME", "관리자"), role, generate_password_hash(pw)))
+            for login, role, name, pw in initial_accounts():
+                con.execute("INSERT INTO users(login_id,name,role,pw_hash,must_change) VALUES(?,?,?,?,1)",
+                            (login, name, role, generate_password_hash(pw)))
         con.execute("COMMIT")
     finally:
         con.close()
@@ -175,7 +202,7 @@ def current_user():
     uid = session.get("uid")
     if not uid:
         return None
-    return db().execute("SELECT id,login_id,name,role FROM users WHERE id=?", (uid,)).fetchone()
+    return db().execute("SELECT id,login_id,name,role,must_change FROM users WHERE id=?", (uid,)).fetchone()
 
 
 def login_required(f):
@@ -200,7 +227,7 @@ def manager_required(f):
     @login_required
     def wrapper(*a, **kw):
         if g.user["role"] not in MANAGER_ROLES:
-            return err("계정 관리는 학부장, 임상실습학과장, 임상실습주임교수만 할 수 있습니다.", 403)
+            return err("계정 관리는 학부장, 임상산학학과장, 임상실습주임교수만 할 수 있습니다.", 403)
         return f(*a, **kw)
     return wrapper
 
@@ -641,7 +668,7 @@ def user_create():
         return err(str(e))
     if db().execute("SELECT 1 FROM users WHERE login_id=?", (login_id,)).fetchone():
         return err("이미 있는 아이디입니다.")
-    db().execute("INSERT INTO users(login_id,name,role,pw_hash) VALUES(?,?,?,?)",
+    db().execute("INSERT INTO users(login_id,name,role,pw_hash,must_change) VALUES(?,?,?,?,1)",
                  (login_id, name, role, generate_password_hash(b["password"])))
     db().commit()
     return jsonify(ok=True, users=users_payload())
@@ -670,7 +697,7 @@ def user_update(uid):
         if b["role"] not in ROLES:
             return err("직위를 선택하세요.")
         if _managers_left(excluding=uid, new_role=b["role"]) == 0:
-            return err("계정을 관리할 수 있는 직위(학부장·학과장·주임교수)가 최소 1명은 있어야 합니다.")
+            return err("계정을 관리할 수 있는 직위(학부장·임상산학학과장·임상실습주임교수)가 최소 1명은 있어야 합니다.")
         sets.append("role=?"); vals.append(b["role"])
     if b.get("password"):
         try:
@@ -678,6 +705,8 @@ def user_update(uid):
         except ValueError as e:
             return err(str(e))
         sets.append("pw_hash=?"); vals.append(generate_password_hash(b["password"]))
+        if uid != g.user["id"]:
+            sets.append("must_change=1")
     if not sets:
         return err("바꿀 내용이 없습니다.")
     db().execute(f"UPDATE users SET {','.join(sets)} WHERE id=?", [*vals, uid])
@@ -708,7 +737,9 @@ def my_password():
         check_pw(b.get("new"))
     except ValueError as e:
         return err(str(e))
-    db().execute("UPDATE users SET pw_hash=? WHERE id=?", (generate_password_hash(b["new"]), g.user["id"]))
+    if b.get("new") == b.get("current"):
+        return err("지금과 다른 비밀번호를 쓰세요.")
+    db().execute("UPDATE users SET pw_hash=?,must_change=0 WHERE id=?", (generate_password_hash(b["new"]), g.user["id"]))
     db().commit()
     return jsonify(ok=True)
 
