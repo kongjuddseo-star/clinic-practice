@@ -24,9 +24,12 @@ function shortAddr(a){const t=String(a||'').trim().split(/\s+/);return t.slice(0
 function cShort(c){const m=String(c||'').match(/성인|노인|여성|모성|아동|정신|지역|관리/);return m?m[0]:(String(c||'').replace(/간호학실습|실습/g,'')||'실습');}
 function cClass(c){return /성인/.test(c)?'c-adult':/여성|모성/.test(c)?'c-women':/아동/.test(c)?'c-child':'c-other';}
 const MAXP=6;
+const STATUS={draft:['','작성 중'],requested:['warn','승인 요청'],approved:['ok','승인'],returned:['bad','반려']};
+const statusBadge=t=>{const [c,n]=STATUS[t.status||'draft']||STATUS.draft;return c?`<span class="badge ${c}">${n}</span>`:'';};
+const exclOf=tid=>(S.exclusions||[]).filter(e=>e.term_id===tid);
 const courseOf=k=>(ui.cfg&&ui.cfg.courses.find(c=>c.key===k))||{key:k,label:'',short:''};
 /* 학기 교과목 이름 → 짧은 이름: 성인간호학실습(2) → 성인(2) */
-function courseShort(name){const m=String(name||'').match(/^(.*?)(간호학실습|간호학|실습)?\s*(\(\d\))?$/);const base=(m&&m[1]||name).replace(/건강$/,'');return base+(m&&m[3]||'');}
+function courseShort(name){const n=String(name||'');const m=n.match(/성인|노인|여성|모성|아동|정신|관리|지역/);const num=(n.match(/\(\d\)/)||[''])[0];return m?m[0]+num:n.replace(/간호학실습|실습/g,'');}
 const termCourses=tid=>(S.courses||[]).filter(c=>c.term_id===tid).sort((a,b)=>a.sort-b.sort||a.id-b.id);
 /* 학기의 2주 단위 기간 수: 마지막으로 채워진 기간까지, 하나도 없으면 4 */
 function termN(T){let n=0;(T.periods||[]).forEach((p,i)=>{if(String(p||'').trim())n=i+1;});return n||4;}
@@ -133,7 +136,7 @@ function renderHistory(){
     const chk=cf.ward.size?'<span class="badge bad">같은 병동 재배치</span>':cf.inst.size?'<span class="badge warn">같은 기관·다른 병동</span>':(list.length?'<span class="badge ok">겹침 없음</span>':'');
     return `<tr><td class="who"><div style="font-weight:600;white-space:nowrap">${disp(s)}</div><div class="mono" style="color:var(--muted);font-size:11.5px">${esc(s.student_no)}</div></td>
       <td class="info">${esc(s.sex)}${s.age?' · '+s.age+'세':''}${s.gpa!=null?`<br>성적 <span class="mono">${s.gpa}</span>`:''}${s.addr?`<br><span title="${esc(s.addr)}">${esc(shortAddr(s.addr))}</span>`:''}${s.note?`<br><span style="color:var(--ink)">참고: ${esc(s.note)}</span>`:''}</td>${cells}<td>${chk}</td></tr>`;}).join('');
-  const h1=`<tr><th rowspan="2" class="who">학번·이름</th><th rowspan="2">인적사항</th>${TC.map(({t,n})=>`<th colspan="${n}" class="grp gstart">${esc(t.label)}</th>`).join('')}<th rowspan="2">점검</th></tr>`;
+  const h1=`<tr><th rowspan="2" class="who">학번·이름</th><th rowspan="2">인적사항</th>${TC.map(({t,n})=>`<th colspan="${n}" class="grp gstart">${esc(t.label)} ${statusBadge(t)}</th>`).join('')}<th rowspan="2">점검</th></tr>`;
   const h2=`<tr>${TC.map(({t,n})=>Array.from({length:n},(_,i)=>`<th class="${i===0?'gstart':''}">${i+1}차${t.periods[i]?`<span class="pd">${esc(t.periods[i])}</span>`:''}</th>`).join('')).join('')}</tr>`;
   const nCols=3+TC.reduce((a,c)=>a+c.n,0);
   el.innerHTML=`<div class="metrics">
@@ -183,6 +186,7 @@ function runPlace(newSeed){
   const st=CS().map(s=>({id:s.student_no,student_no:s.student_no,dbid:s.id,name:s.name,sex:s.sex,gpa:+s.gpa||0,age:+s.age||0,addr:s.addr||'',note:s.note||'',hist:[]}));
   S.placements.forEach(p=>{if(!ht.has(p.term_id))return;const k=idx.get(p.student_id);if(k==null)return;
     st[k].hist.push({term:lab.get(p.term_id),termId:p.term_id,seq:p.seq,inst:p.institution,course:p.course,ward:p.ward,period:p.period,key:instKey(p.institution),codes:[...wardCodes(p.ward)]});});
+  exclOf(T.id).forEach(e=>{const k=idx.get(e.student_id);if(k==null)return;st[k].blocked=e.periods.filter(p=>p<termN(T));st[k].blockReason=e.reason;});
   ui.cfg=buildCfg(T);
   const r=computePlacement(st,ui.cfg,ui.seed);r.st=st;r.termId=T.id;r.histTerms=HT;ui.result=r;
   refreshDup();renderPlace();
@@ -190,10 +194,72 @@ function runPlace(newSeed){
 async function savePlace(){
   const r=ui.result;if(!r)return;const T=S.terms.find(t=>t.id===r.termId);if(!T)return;
   if(r.stats.placed<r.stats.n&&!confirm(`배치하지 못한 학생이 ${r.stats.n-r.stats.placed}명 있습니다. 그래도 저장할까요?`))return;
-  if(T.count&&!confirm(`${T.label}에 이미 저장된 배치 ${T.count}건을 이번 결과로 바꿉니다. 계속할까요?`))return;
+  if((T.status==='requested'||T.status==='approved')&&!confirm(`${T.label}은(는) ${STATUS[T.status][1]} 상태입니다. 배치를 다시 저장하면 상태가 ‘작성 중’으로 돌아가고 다시 승인을 받아야 합니다. 계속할까요?`))return;
+  else if(T.count&&!confirm(`${T.label}에 이미 저장된 배치 ${T.count}건을 이번 결과로 바꿉니다. 계속할까요?`))return;
   const pl=[];r.st.forEach((s,k)=>r.slots[k].forEach((x,p)=>{if(x)pl.push({student_id:s.dbid,seq:p+1,period:ui.cfg.periods[p],institution:x.inst.name,course:courseOf(x.course).label,ward:x.dept});}));
   const j=await act(()=>api('PUT',`/api/terms/${T.id}/placements`,{placements:pl,replace_all:true}),j=>`${T.label} 배치 ${j.saved}건을 저장했습니다.`);
-  if(j){S.terms=j.terms;S.placements=j.placements;renderAll();}
+  if(j){S.terms=j.terms;S.placements=j.placements;if(j.termLog)S.termLog=j.termLog;renderAll();}
+}
+async function termAction(T,action){
+  let note='';
+  if(action==='return'){note=prompt(`${T.label} 배치를 반려하는 사유를 적어 주세요.`);if(note==null)return;if(!note.trim()){toast('반려 사유를 적어 주세요.');return;}}
+  else if(action==='approve'){if(!confirm(`${T.label} 배치를 승인할까요?`))return;note=prompt('승인 의견(없으면 비워 두세요)')||'';}
+  else if(action==='request'){if(!confirm(`${T.label} 배치(${T.count}건)를 임상산학학과장에게 승인 요청할까요?`))return;note=prompt('요청 메모(없으면 비워 두세요)')||'';}
+  else if(action==='cancel'){if(!confirm('승인 요청을 취소할까요?'))return;}
+  const names={request:'승인을 요청했습니다.',approve:'승인했습니다.',return:'반려했습니다.',cancel:'요청을 취소했습니다.'};
+  const j=await act(()=>api('POST',`/api/terms/${T.id}/status`,{action,note}),names[action]);
+  if(j){S.terms=j.terms;S.termLog=j.termLog;renderAll();}
+}
+function approvalPanel(T){
+  if(!T)return '';
+  const st=T.status||'draft',role=S.me.role,log=(S.termLog||[]).filter(l=>l.term_id===T.id);
+  const btns=[];
+  if(role==='임상실습주임교수'){
+    if(st==='draft'||st==='returned')btns.push(`<button type="button" class="primary" data-tact="request" ${T.count?'':'disabled title="먼저 배치를 저장하세요"'}>승인 요청</button>`);
+    if(st==='requested')btns.push('<button type="button" class="ghost" data-tact="cancel">요청 취소</button>');}
+  if(role==='임상산학학과장'){
+    if(st==='requested')btns.push('<button type="button" class="primary" data-tact="approve">승인</button>');
+    if(st==='requested'||st==='approved')btns.push('<button type="button" class="ghost danger" data-tact="return">반려</button>');}
+  const who={draft:'임상실습주임교수가 배치를 저장한 뒤 승인 요청을 합니다.',requested:'임상산학학과장의 검토를 기다리고 있습니다.',approved:'승인된 배치입니다. 다시 저장하면 승인이 풀립니다.',returned:'반려되었습니다. 고쳐서 다시 저장한 뒤 승인 요청을 하세요.'}[st];
+  return `<div class="panel stack approval">
+    <div class="toolbar"><h2>승인</h2><span class="badge ${STATUS[st][0]||''}" style="${STATUS[st][0]?'':'border:1px solid var(--line);color:var(--muted)'}">${STATUS[st][1]}</span>
+      <span class="hint">${T.status_by&&st!=='draft'?esc(T.status_by)+' · '+esc(T.status_at)+(T.status_note?' · “'+esc(T.status_note)+'”':''):esc(who)}</span><span class="spacer"></span>${btns.join('')}</div>
+    ${btns.length||st!=='draft'?'':`<p class="hint">승인 요청은 임상실습주임교수, 승인·반려는 임상산학학과장이 합니다.</p>`}
+    ${log.length?`<details><summary style="cursor:pointer" class="hint">처리 기록 ${log.length}건</summary><ul class="issues" style="margin-top:8px">${log.map(l=>`<li><span class="lv ${({'승인':'ok','반려':'bad','승인 요청':'warn'})[l.action]||'info'}">${esc(l.action)}</span><div>${esc(l.user_name)}(${esc(l.role)}) · ${esc(l.at)}${l.note?`<div class="detail">${esc(l.note)}</div>`:''}</div></li>`).join('')}</ul></details>`:''}
+  </div>`;
+}
+function exclusionPanel(T){
+  if(!T)return '';
+  const N=termN(T),ex=exclOf(T.id),sm=new Map(S.students.map(s=>[s.id,s]));
+  return `<details class="panel" ${ex.length?'open':''}><summary style="cursor:pointer;font-weight:600">배치 제외 기간 (교직실습 등) · ${ex.length}명</summary>
+    <div class="stack" style="margin-top:12px">
+    <p class="hint">여기에 넣은 학생은 고른 기간에 병원에 배정하지 않고, 남은 기간에 이 학기 과목을 모두 배치합니다. 이름이나 학번을 쉼표나 줄바꿈으로 여러 명 넣을 수 있습니다.</p>
+    <div class="grid-form" style="grid-template-columns:minmax(220px,2fr) minmax(120px,1fr)">
+      <label for="exNames">학생 이름 또는 학번<textarea id="exNames" style="min-height:64px" placeholder="권하은, 김가령, 김나윤 …"></textarea></label>
+      <label for="exReason">사유<input id="exReason" value="교직실습"></label>
+    </div>
+    <div class="flags"><b style="font-size:13px">제외할 기간</b>${[...Array(N).keys()].map(p=>`<label><input type="checkbox" id="exP-${p}" data-exp="${p}">${p+1}차 ${esc(T.periods[p]||'')}</label>`).join('')}
+      <span class="spacer"></span><button type="button" class="primary" id="btnExAdd">제외 기간 넣기</button></div>
+    ${ex.length?`<div class="tblwrap"><table><thead><tr><th>학번</th><th>이름</th><th>제외 기간</th><th>사유</th><th></th></tr></thead><tbody>
+      ${ex.map(e=>{const s=sm.get(e.student_id)||{};return `<tr><td class="mono">${esc(s.student_no||'')}</td><td>${s.name?disp(s):''}</td><td>${e.periods.map(p=>`${p+1}차 ${esc(T.periods[p]||'')}`).join(', ')}</td><td>${esc(e.reason)}</td><td><button type="button" class="ghost danger" data-exdel="${e.id}">삭제</button></td></tr>`;}).join('')}
+    </tbody></table></div>`:''}
+    </div></details>`;
+}
+function bindExclusion(T){
+  const add=$('#btnExAdd');if(!add)return;
+  add.onclick=async()=>{
+    const toks=$('#exNames').value.split(/[,\n\t;]+/).map(x=>x.trim()).filter(Boolean);
+    const periods=[...document.querySelectorAll('[data-exp]')].filter(x=>x.checked).map(x=>+x.dataset.exp);
+    if(!toks.length){toast('학생 이름이나 학번을 넣으세요.');return;}
+    if(!periods.length){toast('제외할 기간을 하나 이상 고르세요.');return;}
+    const cs=CS(),ids=[],miss=[],dup=[];
+    toks.forEach(tk=>{const m=cs.filter(s=>s.student_no===tk||s.name===tk);if(m.length===1)ids.push(m[0].id);else if(!m.length)miss.push(tk);else dup.push(`${tk}(${m.map(s=>s.student_no).join('/')})`);});
+    if(!ids.length){toast(`명단에서 찾지 못했습니다: ${[...miss,...dup].join(', ')}`);return;}
+    const j=await act(()=>api('POST',`/api/terms/${T.id}/exclusions`,{student_ids:ids,periods,reason:$('#exReason').value}),
+      `${ids.length}명에게 제외 기간을 넣었습니다.${miss.length?` 찾지 못함: ${miss.join(', ')}.`:''}${dup.length?` 동명이인은 학번으로 넣어 주세요: ${dup.join(', ')}`:''} 배치를 다시 실행하세요.`);
+    if(j){S.exclusions=j.exclusions;renderPlace();}
+  };
+  document.querySelectorAll('[data-exdel]').forEach(b=>b.onclick=async()=>{const j=await act(()=>api('DELETE',`/api/exclusions/${b.dataset.exdel}`),'제외 기간을 지웠습니다. 배치를 다시 실행하세요.');if(j){S.exclusions=j.exclusions;renderPlace();}});
 }
 function periodHead(){return ui.cfg.periods.map((p,i)=>`<th class="${i===0?'gstart':''}">${i+1}기간<span class="pd">${esc(p)}</span></th>`).join('');}
 function renderPlace(){
@@ -204,7 +270,7 @@ function renderPlace(){
   const r=ui.result&&T&&ui.result.termId===T.id?ui.result:null;
   el.innerHTML=`<div class="panel stack">
     <div class="toolbar"><label for="placeTerm" style="font-weight:600">배치할 학기</label>
-      <select id="placeTerm">${terms.map(t=>`<option value="${t.id}" ${T&&t.id===T.id?'selected':''}>${esc(t.label)}</option>`).join('')}</select>
+      <select id="placeTerm">${terms.map(t=>`<option value="${t.id}" ${T&&t.id===T.id?'selected':''}>${esc(t.label)}${t.status&&t.status!=='draft'?' · '+STATUS[t.status][1]:''}</option>`).join('')}</select>
       <span class="spacer"></span>
       <button type="button" class="primary" id="btnRun">배치 실행</button>
       <button type="button" class="ghost" id="btnRerun" ${r?'':'disabled'} title="같은 조건에서 동점인 학생들의 조합만 바꿉니다">다른 조합 보기</button>
@@ -222,11 +288,13 @@ function renderPlace(){
         ${wIn('addr','주소지 인근 점수','<span>그 밖의 기관에서 주소에 지역이 있을 때</span>')}
         ${wIn('same','이전 기관 감점','<span>이전 학기와 같은 기관(다른 병동)일 때 빼는 점수</span>')}
       </div></details>
-  </div><div id="placeBody" class="stack"></div>`;
+  </div>${approvalPanel(T)}${exclusionPanel(T)}<div id="placeBody" class="stack"></div>`;
   $('#placeTerm').onchange=e=>{ui.placeTerm=+e.target.value;renderPlace();};
   $('#btnRun').onclick=()=>{runPlace();toast('배치를 마쳤습니다. 확인 후 저장하세요.');};
   $('#btnRerun').onclick=()=>{runPlace(true);toast('같은 조건으로 다른 조합을 만들었습니다.');};
   $('#btnSave').onclick=savePlace;$('#btnPlaceX').onclick=exportPlace;
+  el.querySelectorAll('[data-tact]').forEach(b=>b.onclick=()=>termAction(T,b.dataset.tact));
+  bindExclusion(T);
   el.querySelectorAll('[data-w]').forEach(x=>x.onchange=async()=>{const j=await act(()=>api('PUT','/api/settings',{weights:{[x.dataset.w]:x.value}}),'기준 점수를 저장했습니다. 배치를 다시 실행하세요.');if(j)S.weights=j.weights;});
   const pb=$('#placeBody');
   if(!r){pb.innerHTML=`<div class="panel empty">${CS().length?'‘배치 실행’을 누르면 결과가 여기에 나옵니다. 저장하기 전까지는 미리보기입니다.':'학생 명단이 비어 있습니다. ‘학생 명단’ 탭에서 먼저 올리세요.'}</div>`;return;}
@@ -257,12 +325,12 @@ function studentView(r){
   const body=rows.map(({s,k})=>{
     const hc=r.histTerms.map((t,ti)=>{const hs=s.hist.filter(h=>h.termId===t.id).sort((a,b)=>a.seq-b.seq);return Array.from({length:TC[ti].n},(_,i)=>{const h=hs[i];
       return `<td class="${i===0?'gstart':''}">${h?`<span class="chip ${cClass(h.course)}"><b>${esc(cShort(h.course))}</b>${esc(shortInst(h.inst))}<small>${esc(h.ward)}</small></span>`:'<span class="t-empty">–</span>'}</td>`;}).join('');}).join('');
-    const cells=slots[k].map((x,i)=>`<td class="${i===0?'gstart':''}">`+(x?`<span class="chip ${cClass(courseOf(x.course).label)}${x.prev?' prev':''}"${x.prev?' title="이전 학기와 같은 기관(다른 병동)"':''}><b>${courseOf(x.course).short}</b>${esc(x.inst.short)}<small>${esc(x.dept)}</small></span>`:'')+'</td>').join('');
+    const cells=slots[k].map((x,i)=>`<td class="${i===0?'gstart':''}">`+(x?`<span class="chip ${cClass(courseOf(x.course).label)}${x.prev?' prev':''}"${x.prev?' title="이전 학기와 같은 기관(다른 병동)"':''}><b>${courseOf(x.course).short}</b>${esc(x.inst.short)}<small>${esc(x.dept)}</small></span>`:(s.blocked&&s.blocked.has&&s.blocked.has(i)?`<span class="chip c-other">${esc(s.blockReason||'배치 제외')}</span>`:''))+'</td>').join('');
     const tags=[];const seen=new Set();slots[k].forEach(x=>{if(!x)return;x.tags.forEach(t=>{const key=courseOf(x.course).short+t[1];if(t[0]==='fem'||seen.has(key))return;seen.add(key);tags.push([t[0],courseOf(x.course).short+' · '+t[1]]);});});
     return `<tr><td class="who"><div style="font-weight:600;white-space:nowrap">${disp(s)}</div><div class="mono" style="color:var(--muted);font-size:11.5px">${esc(s.id)}</div></td>
       <td class="info">${s.sex} · ${s.age}세<br>성적 <span class="mono">${s.gpa}</span> (${s.rank}위)<br><span title="${esc(s.addr)}">${esc(shortAddr(s.addr))}</span>${s.note?`<br><span style="color:var(--ink)">참고: ${esc(s.note)}</span>`:''}</td>${hc}${cells}<td style="min-width:180px">${tagHtml(tags)}</td></tr>`;}).join('');
   const T=S.terms.find(t=>t.id===r.termId);
-  const h1=`<tr><th rowspan="2" class="who">학번·이름</th><th rowspan="2">인적사항</th>${TC.map(t=>`<th colspan="${t.n}" class="grp gstart">${esc(t.label)}</th>`).join('')}<th colspan="4" class="grp gstart now">${esc(T?T.label:'')} · 이번 배치</th><th rowspan="2">반영된 조건</th></tr>`;
+  const h1=`<tr><th rowspan="2" class="who">학번·이름</th><th rowspan="2">인적사항</th>${TC.map(t=>`<th colspan="${t.n}" class="grp gstart">${esc(t.label)}</th>`).join('')}<th colspan="${ui.cfg.periods.length}" class="grp gstart now">${esc(T?T.label:'')} · 이번 배치</th><th rowspan="2">반영된 조건</th></tr>`;
   const h2=`<tr>${TC.map(t=>Array.from({length:t.n},(_,i)=>`<th class="${i===0?'gstart':''}">${i+1}차</th>`).join('')).join('')}${periodHead()}</tr>`;
   return `<div class="toolbar" style="margin-bottom:10px"><input id="pq" type="text" placeholder="이름, 학번, 주소, 참고로 찾기" value="${esc(ui.pq)}" style="max-width:280px"><span class="hint">${rows.length}명 표시</span></div>
   <div class="tblwrap"><table class="tl"><thead>${h1}${h2}</thead><tbody>${body||'<tr><td colspan="20" class="empty">찾는 학생이 없습니다.</td></tr>'}</tbody></table></div>`;

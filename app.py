@@ -107,6 +107,14 @@ CREATE TABLE IF NOT EXISTS students(
   updated_at TEXT DEFAULT CURRENT_TIMESTAMP);
 CREATE TABLE IF NOT EXISTS cohorts(
   id INTEGER PRIMARY KEY, year3 INTEGER UNIQUE NOT NULL, name TEXT NOT NULL DEFAULT '');
+CREATE TABLE IF NOT EXISTS exclusions(
+  id INTEGER PRIMARY KEY, term_id INTEGER NOT NULL REFERENCES terms(id) ON DELETE CASCADE,
+  student_id INTEGER NOT NULL REFERENCES students(id) ON DELETE CASCADE,
+  periods TEXT NOT NULL DEFAULT '[]', reason TEXT NOT NULL DEFAULT '', UNIQUE(term_id, student_id));
+CREATE TABLE IF NOT EXISTS term_log(
+  id INTEGER PRIMARY KEY, term_id INTEGER NOT NULL REFERENCES terms(id) ON DELETE CASCADE,
+  action TEXT NOT NULL, user_name TEXT NOT NULL DEFAULT '', role TEXT NOT NULL DEFAULT '', note TEXT NOT NULL DEFAULT '',
+  at TEXT NOT NULL DEFAULT (datetime('now','localtime')));
 CREATE TABLE IF NOT EXISTS courses(
   id INTEGER PRIMARY KEY, term_id INTEGER NOT NULL REFERENCES terms(id) ON DELETE CASCADE,
   name TEXT NOT NULL, units INTEGER NOT NULL DEFAULT 1, consecutive INTEGER NOT NULL DEFAULT 0, sort INTEGER NOT NULL DEFAULT 0);
@@ -254,6 +262,10 @@ def init_db():
             con.execute("ALTER TABLE terms ADD COLUMN cohort_id INTEGER REFERENCES cohorts(id) ON DELETE CASCADE")
         if "kind" not in tcols:
             con.execute("ALTER TABLE terms ADD COLUMN kind TEXT NOT NULL DEFAULT ''")
+        for col in ("status", "status_note", "status_by", "status_at"):  # 승인 상태
+            if col not in tcols:
+                dflt = "draft" if col == "status" else ""
+                con.execute(f"ALTER TABLE terms ADD COLUMN {col} TEXT NOT NULL DEFAULT '{dflt}'")
         if con.execute("SELECT COUNT(*) FROM cohorts").fetchone()[0] == 0:
             c26 = create_cohort(con, 2026)
             create_cohort(con, 2027)
@@ -595,6 +607,108 @@ def cohort_delete(cid):
     return jsonify(ok=True, cohorts=cohorts_payload(), terms=terms_payload())
 
 
+# ---- 승인 절차: 임상실습주임교수가 승인 요청 → 임상산학학과장이 승인 또는 반려
+REQUEST_ROLES = {"임상실습주임교수"}
+APPROVE_ROLES = {"임상산학학과장"}
+STATUS_NAMES = {"draft": "작성 중", "requested": "승인 요청", "approved": "승인", "returned": "반려"}
+
+
+def term_log_payload():
+    return [dict(r) for r in db().execute("SELECT * FROM term_log ORDER BY id DESC LIMIT 300")]
+
+
+def set_status(tid, status, action, note=""):
+    now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+    db().execute("UPDATE terms SET status=?,status_note=?,status_by=?,status_at=? WHERE id=?",
+                 (status, note, f"{g.user['name']}({g.user['role']})", now, tid))
+    db().execute("INSERT INTO term_log(term_id,action,user_name,role,note,at) VALUES(?,?,?,?,?,?)",
+                 (tid, action, g.user["name"], g.user["role"], note, now))
+
+
+def reset_if_reviewed(tid, why):
+    t = db().execute("SELECT status FROM terms WHERE id=?", (tid,)).fetchone()
+    if t and t["status"] in ("requested", "approved"):
+        set_status(tid, "draft", "초기화", why)
+
+
+@app.post("/api/terms/<int:tid>/status")
+@login_required
+def term_status(tid):
+    b = body()
+    act_ = b.get("action")
+    note = str(b.get("note") or "").strip()
+    t = db().execute("SELECT t.*, (SELECT COUNT(*) FROM placements p WHERE p.term_id=t.id) AS count FROM terms t WHERE id=?", (tid,)).fetchone()
+    if not t:
+        return err("학기를 찾을 수 없습니다.", 404)
+    role, st = g.user["role"], t["status"] or "draft"
+    if act_ == "request":
+        if role not in REQUEST_ROLES:
+            return err("승인 요청은 임상실습주임교수만 할 수 있습니다.", 403)
+        if st not in ("draft", "returned"):
+            return err(f"지금 상태({STATUS_NAMES.get(st, st)})에서는 승인 요청을 할 수 없습니다.")
+        if not t["count"]:
+            return err("저장된 배치가 없습니다. 먼저 배치를 저장하세요.")
+        set_status(tid, "requested", "승인 요청", note)
+    elif act_ == "cancel":
+        if role not in REQUEST_ROLES:
+            return err("요청 취소는 임상실습주임교수만 할 수 있습니다.", 403)
+        if st != "requested":
+            return err("승인 요청 중인 학기가 아닙니다.")
+        set_status(tid, "draft", "요청 취소", note)
+    elif act_ == "approve":
+        if role not in APPROVE_ROLES:
+            return err("승인은 임상산학학과장만 할 수 있습니다.", 403)
+        if st != "requested":
+            return err("승인 요청된 학기만 승인할 수 있습니다.")
+        set_status(tid, "approved", "승인", note)
+    elif act_ == "return":
+        if role not in APPROVE_ROLES:
+            return err("반려는 임상산학학과장만 할 수 있습니다.", 403)
+        if st not in ("requested", "approved"):
+            return err("승인 요청되었거나 승인된 학기만 반려할 수 있습니다.")
+        if not note:
+            return err("반려 사유를 적어 주세요.")
+        set_status(tid, "returned", "반려", note)
+    else:
+        return err("알 수 없는 요청입니다.")
+    db().commit()
+    return jsonify(ok=True, terms=terms_payload(), termLog=term_log_payload())
+
+
+# ---- 배치 제외 기간 (교직실습 등)
+def exclusions_payload():
+    return [dict(r, periods=json.loads(r["periods"])) for r in db().execute("SELECT * FROM exclusions ORDER BY term_id,id")]
+
+
+@app.post("/api/terms/<int:tid>/exclusions")
+@login_required
+def exclusion_add(tid):
+    b = body()
+    if not db().execute("SELECT 1 FROM terms WHERE id=?", (tid,)).fetchone():
+        return err("학기를 찾을 수 없습니다.", 404)
+    ids = [to_int(x) for x in (b.get("student_ids") or []) if to_int(x)]
+    periods = sorted({p for p in (to_int(x) for x in (b.get("periods") or [])) if p is not None and 0 <= p < MAXP})
+    if not ids:
+        return err("학생을 고르세요.")
+    if not periods:
+        return err("제외할 기간을 하나 이상 고르세요.")
+    reason = str(b.get("reason") or "").strip()
+    for sid in ids:
+        db().execute("INSERT INTO exclusions(term_id,student_id,periods,reason) VALUES(?,?,?,?) "
+                     "ON CONFLICT(term_id,student_id) DO UPDATE SET periods=excluded.periods,reason=excluded.reason",
+                     (tid, sid, json.dumps(periods), reason))
+    db().commit()
+    return jsonify(ok=True, exclusions=exclusions_payload())
+
+
+@app.delete("/api/exclusions/<int:eid>")
+@login_required
+def exclusion_delete(eid):
+    db().execute("DELETE FROM exclusions WHERE id=?", (eid,))
+    db().commit()
+    return jsonify(ok=True, exclusions=exclusions_payload())
+
+
 def terms_payload():
     rows = db().execute(
         "SELECT t.*, (SELECT COUNT(*) FROM placements p WHERE p.term_id=t.id) AS count FROM terms t ORDER BY sort,id").fetchall()
@@ -620,6 +734,8 @@ def bootstrap():
         "institutions": institutions_payload(),
         "cohorts": cohorts_payload(),
         "courses": courses_payload(),
+        "exclusions": exclusions_payload(),
+        "termLog": term_log_payload(),
         "students": [dict(r) for r in db().execute("SELECT * FROM students ORDER BY student_no")],
         "terms": terms_payload(),
         "placements": [dict(r) for r in db().execute(
@@ -923,12 +1039,14 @@ def placements_put(tid):
                       str(p.get("course") or "").strip(), str(p.get("ward") or "").strip()))
     if b.get("replace_all"):
         db().execute("DELETE FROM placements WHERE term_id=?", (tid,))
+        reset_if_reviewed(tid, "배치가 새로 저장됨")
     else:
+        reset_if_reviewed(tid, "배치 이력이 바뀜")
         for sid in {c[1] for c in clean}:
             db().execute("DELETE FROM placements WHERE term_id=? AND student_id=?", (tid, sid))
     db().executemany("INSERT INTO placements(term_id,student_id,seq,period,institution,course,ward) VALUES(?,?,?,?,?,?,?)", clean)
     db().commit()
-    return jsonify(ok=True, saved=len(clean), terms=terms_payload(), placements=[dict(r) for r in db().execute(
+    return jsonify(ok=True, saved=len(clean), terms=terms_payload(), termLog=term_log_payload(), placements=[dict(r) for r in db().execute(
         "SELECT term_id,student_id,seq,period,institution,course,ward FROM placements ORDER BY term_id,student_id,seq")])
 
 
@@ -936,6 +1054,7 @@ def placements_put(tid):
 @login_required
 def placements_clear(tid):
     db().execute("DELETE FROM placements WHERE term_id=?", (tid,))
+    reset_if_reviewed(tid, "배치를 비움")
     db().commit()
     return jsonify(ok=True, terms=terms_payload())
 

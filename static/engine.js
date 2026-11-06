@@ -87,33 +87,37 @@ function enumPatterns(courses,N){
   return out.map(a=>({asg:a,full:a.every(Boolean),units:a.reduce((t,x)=>t+(x?x.length:0),0)})).filter(p=>p.units>0);
 }
 function patRes(pat,courses){const r=[];pat.asg.forEach((ps,ci)=>{if(!ps)return;if(courses[ci].consec)r.push(ci+':b'+ps[0]);else ps.forEach(p=>r.push(ci+':p'+p));});return r;}
-function choosePatternCounts(pats,R,n,rng){
-  const P=pats.length,res=pats.map(p=>p.res);
+/* 학생마다 쓸 수 있는 일정 패턴을 정해 인원을 배분한다. 제외 기간(교직실습 등)이 있는 학생부터 고른다 */
+function choosePatternCounts(pats,R,st,rng){
+  const P=pats.length,n=st.length,res=pats.map(p=>p.res);
+  const okFor=st.map(s=>{const b=s.blocked;return pats.map(p=>!b||!b.size||p.asg.every(ps=>!ps||ps.every(q=>!b.has(q))));});
   const fits=(rem,i)=>res[i].every(r=>rem[r]>0);
   const slack=(rem,i)=>Math.min(...res[i].map(r=>R[r]?rem[r]/R[r]:0));
+  const F=[...Array(P).keys()].filter(i=>pats[i].full),Pp=[...Array(P).keys()].filter(i=>!pats[i].full).sort((a,b)=>pats[b].units-pats[a].units);
+  const base=[...Array(n).keys()];
   let best=null;
-  for(let t=0;t<80;t++){
-    const rem={...R},cnt=new Array(P).fill(0);let full=0,units=0,got=0;
-    const take=i=>{res[i].forEach(r=>rem[r]--);cnt[i]++;got++;units+=pats[i].units;if(pats[i].full)full++;};
-    const pick=cands=>{let bi=-1,bv=-1;cands.forEach(i=>{if(!fits(rem,i))return;const v=slack(rem,i)+rng()*(t?0.05:0);if(v>bv){bv=v;bi=i;}});return bi;};
-    const F=[...Array(P).keys()].filter(i=>pats[i].full);
-    while(got<n){const i=pick(F);if(i<0)break;take(i);}
-    // 교환으로 전체 패턴 하나 더 넣기: 기존 하나를 빼고 둘을 넣을 수 있으면
-    let improved=true,guard=0;
-    while(got<n&&improved&&guard++<200){improved=false;
-      for(const a of F){if(!cnt[a])continue;res[a].forEach(r=>rem[r]++);
-        let done=false;for(const b of F){if(!fits(rem,b))continue;res[b].forEach(r=>rem[r]--);const c=F.find(c=>fits(rem,c));
-          if(c!==undefined){cnt[a]--;cnt[b]++;res[c].forEach(r=>rem[r]--);cnt[c]++;got++;full++;units+=pats[c].units-pats[a].units+pats[b].units;done=true;break;}
-          res[b].forEach(r=>rem[r]++);}
-        if(done){improved=true;break;}res[a].forEach(r=>rem[r]--);}}
-    // 남는 학생: 가능한 과목만이라도
-    const Pp=[...Array(P).keys()].filter(i=>!pats[i].full).sort((a,b)=>pats[b].units-pats[a].units);
-    while(got<n){let bi=-1;for(const i of Pp){if(fits(rem,i)){if(bi<0||pats[i].units>pats[bi].units||(pats[i].units===pats[bi].units&&slack(rem,i)>slack(rem,bi)))bi=i;}}if(bi<0)break;take(bi);}
+  for(let t=0;t<60;t++){
+    const order=base.slice().sort((a,b)=>((st[b].blocked&&st[b].blocked.size)||0)-((st[a].blocked&&st[a].blocked.size)||0)||(t?rng()-0.5:0));
+    const rem={...R},asg=new Array(n).fill(-1);
+    const take=(k,i)=>{res[i].forEach(r=>rem[r]--);asg[k]=i;},drop=k=>{res[asg[k]].forEach(r=>rem[r]++);asg[k]=-1;};
+    for(const k of order){let bi=-1,bv=-1;for(const i of F){if(!okFor[k][i]||!fits(rem,i))continue;const v=slack(rem,i)+rng()*(t?0.05:0);if(v>bv){bv=v;bi=i;}}if(bi>=0)take(k,bi);}
+    // 남은 학생: 다른 학생의 패턴을 바꿔 자리를 만들 수 있으면 교환
+    for(const L of order){if(asg[L]>=0)continue;
+      let done=false;
+      for(const A of order){if(done)break;if(A===L||asg[A]<0||!pats[asg[A]].full)continue;const a=asg[A];drop(A);
+        for(const b of F){if(b===a||!okFor[A][b]||!fits(rem,b))continue;take(A,b);const c=F.find(c=>okFor[L][c]&&fits(rem,c));
+          if(c!==undefined){take(L,c);done=true;break;}drop(A);}
+        if(!done)take(A,a);}
+    }
+    // 그래도 남으면 가능한 과목만이라도
+    for(const k of order){if(asg[k]>=0)continue;let bi=-1;for(const i of Pp){if(!okFor[k][i]||!fits(rem,i))continue;if(bi<0||pats[i].units>pats[bi].units||(pats[i].units===pats[bi].units&&slack(rem,i)>slack(rem,bi)))bi=i;}if(bi>=0)take(k,bi);}
+    let full=0,units=0;asg.forEach(i=>{if(i>=0){units+=pats[i].units;if(pats[i].full)full++;}});
     const key=full*1e6+units;
-    if(!best||key>best.key)best={key,cnt:cnt.slice()};
+    if(!best||key>best.key)best={key,asg:asg.slice()};
     if(full===n)break;
   }
-  return best.cnt;
+  const cnt=new Array(P).fill(0);best.asg.forEach(i=>{if(i>=0)cnt[i]++;});
+  return {cnt,okFor};
 }
 
 function computePlacement(students,cfg,seed){
@@ -134,7 +138,8 @@ function computePlacement(students,cfg,seed){
     if(c.consec){for(let s=0;s+c.units<=N;s+=c.units)R[ci+':b'+s]=instsOf(ci).reduce((a,i)=>{let m=Infinity;for(let k=0;k<c.units;k++)m=Math.min(m,cap(i,s+k));return a+m;},0);}
     else for(let p=0;p<N;p++)R[ci+':p'+p]=instsOf(ci).reduce((a,i)=>a+cap(i,p),0);});
   const pats=enumPatterns(courses,N);pats.forEach(p=>p.res=patRes(p,courses));
-  const cnt=pats.length?choosePatternCounts(pats,R,n,rng):[];
+  st.forEach(s=>{s.blocked=s.blocked instanceof Set?s.blocked:new Set(s.blocked||[]);});
+  const {cnt,okFor}=pats.length?choosePatternCounts(pats,R,st,rng):{cnt:[],okFor:[]};
 
   /* ② 학생 → 패턴: 학생에게 유리한 기간 조합(예: 지역 기관에 자리가 있는 기간)을 고르도록 */
   const best={};// best[k][res] = 그 자원에서 학생이 받을 수 있는 최고 점수
@@ -146,7 +151,7 @@ function computePlacement(students,cfg,seed){
   const pOf=st.map(()=>null);
   if(used.length){
     const g=new MCF(2+n+used.length);const E=[];
-    st.forEach((s,k)=>{g.add(0,2+k,1,0);used.forEach((pi,j)=>{const v=pats[pi].res.reduce((a,r)=>a+best[k][r],0)+pats[pi].units*2000;E.push({k,pi,e:g.add(2+k,2+n+j,1,-(v+jit()))});});});
+    st.forEach((s,k)=>{g.add(0,2+k,1,0);used.forEach((pi,j)=>{if(!okFor[k][pi])return;const v=pats[pi].res.reduce((a,r)=>a+best[k][r],0)+pats[pi].units*2000;E.push({k,pi,e:g.add(2+k,2+n+j,1,-(v+jit()))});});});
     used.forEach((pi,j)=>g.add(2+n+j,1,cnt[pi],0));
     g.run(0,1);E.forEach(x=>{if(x.e.cap===0)pOf[x.k]=pats[x.pi];});
   }
@@ -204,6 +209,10 @@ function computePlacement(students,cfg,seed){
     if(have<need)issues.push({lv:'bad',msg:`${c.label} 자리가 ${have}석으로, 학생 ${n}명 × ${c.units}회 = ${need}석보다 ${need-have}석 부족합니다.`,detail:'기관·병동 탭에서 이 과목의 정원을 늘리거나 기관을 추가하세요.'});
     if(missing[ci].length)issues.push({lv:'bad',msg:`${c.label}을(를) 배치하지 못한 학생 ${missing[ci].length}명`,detail:missing[ci].slice(0,60).map(nm).join(', ')+(missing[ci].length>60?' 외':'')});
   });
+  const blk=st.map((s,k)=>k).filter(k=>st[k].blocked.size);
+  if(blk.length){const miss=blk.filter(k=>missing.some(m=>m.includes(k)));
+    issues.push({lv:miss.length?'warn':'ok',msg:`배치 제외 기간이 있는 학생 ${blk.length}명은 그 기간에 배치하지 않았습니다.${miss.length?` 그중 ${miss.length}명은 남은 기간에 모든 과목을 넣지 못했습니다.`:' 모두 남은 기간에 모든 과목이 배치되었습니다.'}`,
+      detail:blk.map(k=>`${nm(k)} ${[...st[k].blocked].sort().map(p=>(P[p]||(p+1)+'차')).join('·')}${st[k].blockReason?' ('+st[k].blockReason+')':''}`).join(', ')});}
   if(!courses.length)issues.push({lv:'bad',msg:'이 학기에 교과목이 없습니다. 기관·병동 탭에서 교과목과 기관을 등록하세요.'});
   let femViol=0;slots.forEach((ss,k)=>ss.forEach(s=>{if(s&&s.inst.female&&st[k].sex==='남')femViol++;}));
   if(femViol)issues.push({lv:'bad',msg:`여학생 전용 기관에 남학생 ${femViol}건이 배치되었습니다.`});
