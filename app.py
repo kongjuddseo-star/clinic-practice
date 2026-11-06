@@ -309,6 +309,14 @@ def init_db():
                 for uid, h in con.execute("SELECT id,pw_hash FROM users WHERE init_pw=1").fetchall():
                     if not check_password_hash(h, pw):
                         con.execute("UPDATE users SET pw_hash=?,must_change=1 WHERE id=?", (generate_password_hash(pw), uid))
+            # 비밀번호를 잊은 계정: RESET_PASSWORD_FOR="dean,chair" → INIT_PASSWORD로 한 번만 초기화
+            reset = (os.environ.get("RESET_PASSWORD_FOR") or "").strip()
+            done = con.execute("SELECT value FROM settings WHERE key='pw_reset_done'").fetchone()
+            if reset and pw and (not done or done[0] != reset):
+                for login in [x.strip() for x in reset.split(",") if x.strip()]:
+                    con.execute("UPDATE users SET pw_hash=?,must_change=1,init_pw=1 WHERE login_id=?",
+                                (generate_password_hash(pw), login))
+                con.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('pw_reset_done',?)", (reset,))
         con.execute("COMMIT")
     finally:
         con.close()
