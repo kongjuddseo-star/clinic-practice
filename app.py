@@ -21,6 +21,7 @@ ROLE_RENAMES = {"임상실습학과장": "임상산학학과장", "임상실습�
 # 계정을 만들고 지울 수 있는 직위
 MANAGER_ROLES = {"학부장", "임상산학학과장", "임상실습주임교수"}
 COURSES = ["adult", "women", "child"]
+MAXP = 6  # 학기당 2주 단위 기간 최대 개수
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.environ.get("DATA_DIR") or os.path.join(BASE_DIR, "data")
@@ -495,7 +496,7 @@ def plan_import():
         per = periods.get((year, grade, sem))
         if per:
             db().execute("UPDATE terms SET periods=? WHERE id=?",
-                         (json.dumps([str(x or "").strip() for x in (list(per) + ["", "", "", ""])[:4]], ensure_ascii=False), tid))
+                         (json.dumps([str(x or "").strip() for x in (list(per) + [""] * MAXP)[:MAXP]], ensure_ascii=False), tid))
         trows = [r for r in rows if (to_int(r.get("year")), to_int(r.get("grade")), to_int(r.get("sem"))) == (year, grade, sem)]
         if not trows:
             summary.append(f"{term_label(year3, kind)}: 기간만 반영")
@@ -509,7 +510,7 @@ def plan_import():
                 cmap[cname] = db().execute("INSERT INTO courses(term_id,name,units,consecutive,sort) VALUES(?,?,?,?,?)",
                                            (tid, cname, max(1, min(4, to_int(r.get("units")) or 1)), 1 if r.get("consec") else 0, len(cmap) + 1)).lastrowid
             iname = str(r["inst"]).strip()
-            caps = [max(0, to_int(x) or 0) for x in (list(r.get("caps") or []) + [0, 0, 0, 0])[:4]]
+            caps = [max(0, to_int(x) or 0) for x in (list(r.get("caps") or []) + [0] * MAXP)[:MAXP]]
             key = (cname, iname)
             if key not in imap:
                 cur = db().execute("INSERT INTO institutions(course,course_id,name,short,kw,caps,grade,female,local,sort) VALUES('',?,?,?,?,?,?,?,?,?)",
@@ -622,7 +623,7 @@ def clean_inst(b, partial=False):
             if k == "name" and not v:
                 raise ValueError("기관명을 입력하세요.")
         elif k == "caps":
-            v = [max(0, to_int(x) or 0) for x in (list(v or []) + [0, 0, 0, 0])[:4]]
+            v = [max(0, to_int(x) or 0) for x in (list(v or []) + [0] * MAXP)[:MAXP]]
             v = json.dumps(v)
         elif k in ("grade", "female", "local"):
             v = 1 if v else 0
@@ -830,7 +831,7 @@ def term_create():
         return err("학기 이름을 입력하세요.")
     if db().execute("SELECT 1 FROM terms WHERE label=?", (label,)).fetchone():
         return err("같은 이름의 학기가 이미 있습니다.")
-    periods = [str(x or "").strip() for x in (list(b.get("periods") or []) + ["", "", "", ""])[:4]]
+    periods = [str(x or "").strip() for x in (list(b.get("periods") or []) + [""] * MAXP)[:MAXP]]
     cid = to_int(b.get("cohort_id"))
     if not cid or not db().execute("SELECT 1 FROM cohorts WHERE id=?", (cid,)).fetchone():
         return err("학년(기수)을 고르세요.")
@@ -857,7 +858,7 @@ def term_update(tid):
         sets.append("label=?"); vals.append(label)
     if "periods" in b:
         sets.append("periods=?")
-        vals.append(json.dumps([str(x or "").strip() for x in (list(b["periods"] or []) + ["", "", "", ""])[:4]], ensure_ascii=False))
+        vals.append(json.dumps([str(x or "").strip() for x in (list(b["periods"] or []) + [""] * MAXP)[:MAXP]], ensure_ascii=False))
     if "sort" in b:
         sets.append("sort=?"); vals.append(to_int(b["sort"]) or 0)
     if not sets:

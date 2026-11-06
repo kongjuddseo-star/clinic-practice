@@ -23,6 +23,7 @@ function shortInst(name){const k=instKey(name);const i=S.institutions.find(x=>in
 function shortAddr(a){const t=String(a||'').trim().split(/\s+/);return t.slice(0,2).join(' ');}
 function cShort(c){const m=String(c||'').match(/성인|노인|여성|모성|아동|정신|지역|관리/);return m?m[0]:(String(c||'').replace(/간호학실습|실습/g,'')||'실습');}
 function cClass(c){return /성인/.test(c)?'c-adult':/여성|모성/.test(c)?'c-women':/아동/.test(c)?'c-child':'c-other';}
+const MAXP=6;
 const courseOf=k=>(ui.cfg&&ui.cfg.courses.find(c=>c.key===k))||{key:k,label:'',short:''};
 /* 학기 교과목 이름 → 짧은 이름: 성인간호학실습(2) → 성인(2) */
 function courseShort(name){const m=String(name||'').match(/^(.*?)(간호학실습|간호학|실습)?\s*(\(\d\))?$/);const base=(m&&m[1]||name).replace(/건강$/,'');return base+(m&&m[3]||'');}
@@ -450,7 +451,7 @@ function renderInsts(){
     const j=await act(()=>api('POST','/api/institutions',{course_id:+f.dataset.addinst,name}),`${name}을(를) 추가했습니다. 정원과 병동을 입력하세요.`);if(j){S.institutions=j.institutions;renderInsts();}});
   el.querySelectorAll('[data-if]').forEach(x=>x.onchange=async()=>{
     const id=+x.dataset.iid,f=x.dataset.if;const inst=S.institutions.find(i=>i.id===id);let v;
-    if(f==='cap'){v=inst.caps.slice();while(v.length<4)v.push(0);v[+x.dataset.p]=+x.value||0;}else if(x.type==='checkbox')v=x.checked;else v=x.value;
+    if(f==='cap'){v=inst.caps.slice();while(v.length<MAXP)v.push(0);v[+x.dataset.p]=+x.value||0;}else if(x.type==='checkbox')v=x.checked;else v=x.value;
     const j=await act(()=>api('PUT',`/api/institutions/${id}`,{[f==='cap'?'caps':f]:v}));
     if(j){S.institutions=j.institutions;x.classList.remove('saved');void x.offsetWidth;x.classList.add('saved');}
   });
@@ -464,11 +465,11 @@ function renderInsts(){
 }
 function instCard(i,T,N){
   return `<div class="inst-card">
-    <div class="inst-grid">
+    <div class="inst-grid" style="--np:${N}">
       <label for="in-${i.id}">기관명<input id="in-${i.id}" data-iid="${i.id}" data-if="name" value="${esc(i.name)}"></label>
       <label for="is-${i.id}">약칭<input id="is-${i.id}" data-iid="${i.id}" data-if="short" value="${esc(i.short)}"></label>
       <label for="ik-${i.id}">지역 키워드<input id="ik-${i.id}" data-iid="${i.id}" data-if="kw" value="${esc(i.kw)}" placeholder="예: 안동, 영주"></label>
-      ${[0,1,2,3].map(p=>`<label for="ic-${i.id}-${p}" ${p>=N?'hidden':''}>${p+1}차${T.periods[p]?' '+esc(T.periods[p]).slice(0,5):''}<input id="ic-${i.id}-${p}" type="number" min="0" data-iid="${i.id}" data-if="cap" data-p="${p}" value="${i.caps[p]||0}"></label>`).join('')}
+      ${[...Array(MAXP).keys()].map(p=>`<label for="ic-${i.id}-${p}" ${p>=N?'hidden':''}>${p+1}차${T.periods[p]?' '+esc(T.periods[p]).slice(0,5):''}<input id="ic-${i.id}-${p}" type="number" min="0" data-iid="${i.id}" data-if="cap" data-p="${p}" value="${i.caps[p]||0}"></label>`).join('')}
     </div>
     <div class="flags">
       <label><input type="checkbox" id="ig-${i.id}" data-iid="${i.id}" data-if="grade" ${i.grade?'checked':''}>성적 우선</label>
@@ -494,7 +495,7 @@ function readPlanFile(file){
         const data=XLSX.utils.sheet_to_json(wb.Sheets[n],{header:1,raw:false,defval:''});
         const hi=data.slice(0,10).findIndex(r=>r.some(c=>/학년도/.test(String(c)))&&r.some(c=>/^학기$/.test(String(c).trim())));if(hi<0)return;
         const h=data[hi].map(c=>String(c).replace(/\s+/g,'').trim());const f=re=>h.findIndex(c=>re.test(c));
-        const cY=f(/^학년도$/),cG=f(/^학년$/),cS=f(/^학기$/),capC=[1,2,3,4].map(k=>f(new RegExp('^'+k+'차$'))),perC=[1,2,3,4].map(k=>f(new RegExp('^'+k+'차기간$')));
+        const cY=f(/^학년도$/),cG=f(/^학년$/),cS=f(/^학기$/),capC=[1,2,3,4,5,6].map(k=>f(new RegExp('^'+k+'차$'))),perC=[1,2,3,4,5,6].map(k=>f(new RegExp('^'+k+'차기간$')));
         const yes=v=>/^(o|ㅇ|y|예|1|v|✓|true)$/i.test(String(v||'').trim());
         const cell=(r,i)=>i>=0?String(r[i]??'').trim():'';
         if(f(/^기관$/)>=0&&f(/^교과목$/)>=0){
@@ -518,11 +519,11 @@ function readPlanFile(file){
 function savePlanTemplate(){
   if(typeof XLSX==='undefined')return;
   const wb=XLSX.utils.book_new();
-  const p=XLSX.utils.aoa_to_sheet([['학년도','학년','학기','1차 기간','2차 기간','3차 기간','4차 기간'],[2027,4,1,'04/12-04/23','04/26-05/07','05/10-05/21','05/24-06/04']]);
-  const i=XLSX.utils.aoa_to_sheet([['학년도','학년','학기','교과목','2주 단위 수','연속','기관','약칭','병동','1차','2차','3차','4차','성적우선','여학생만','지역우선','지역','비고'],
-    [2027,4,1,'성인간호학실습(3)',1,'','강동경희대학교병원','강동경희','',0,8,8,8,'O','','','서울','예시 행입니다. 지우고 쓰세요'],
-    [2027,3,2,'성인간호학실습(2)',2,'O','이대서울병원','이대서울','93병동',4,4,4,4,'O','','','서울','병동별로 적으면 같은 기관 줄의 인원이 합쳐집니다']]);
-  p['!cols']=[{wch:8},{wch:6},{wch:6},{wch:14},{wch:14},{wch:14},{wch:14}];
+  const p=XLSX.utils.aoa_to_sheet([['학년도','학년','학기','1차 기간','2차 기간','3차 기간','4차 기간','5차 기간','6차 기간'],[2027,4,1,'1월','04/12-04/23','04/26-05/07','05/10-05/21','05/24-06/04','']]);
+  const i=XLSX.utils.aoa_to_sheet([['학년도','학년','학기','교과목','2주 단위 수','연속','기관','약칭','병동','1차','2차','3차','4차','5차','6차','성적우선','여학생만','지역우선','지역','비고'],
+    [2027,4,1,'성인간호학실습(3)',1,'','강동경희대학교병원','강동경희','',0,0,8,8,8,'','O','','','서울','예시 행입니다. 지우고 쓰세요'],
+    [2027,3,2,'성인간호학실습(2)',2,'O','이대서울병원','이대서울','93병동',4,4,4,4,'','','O','','','서울','병동별로 적으면 같은 기관 줄의 인원이 합쳐집니다']]);
+  p['!cols']=[{wch:8},{wch:6},{wch:6},{wch:14},{wch:14},{wch:14},{wch:14},{wch:14},{wch:14}];
   i['!cols']=[{wch:8},{wch:6},{wch:6},{wch:20},{wch:11},{wch:6},{wch:24},{wch:12},{wch:12},{wch:6},{wch:6},{wch:6},{wch:6},{wch:8},{wch:8},{wch:8},{wch:12},{wch:40}];
   XLSX.utils.book_append_sheet(wb,p,'기간');XLSX.utils.book_append_sheet(wb,i,'기관');
   saveXlsx(wb,'실습계획_양식.xlsx');
@@ -539,7 +540,7 @@ function renderTerms(){
   ${terms.map(t=>{const n=new Set(S.placements.filter(p=>p.term_id===t.id).map(p=>p.student_id)).size;return `<div class="term-card">
     <div class="term-grid">
       <label for="tl-${t.id}">학기<input id="tl-${t.id}" data-tid="${t.id}" data-tf="label" value="${esc(t.label)}" ${t.kind&&t.kind!=='etc'?'readonly title="기수에 따라 정해지는 이름입니다"':''}></label>
-      ${[0,1,2,3].map(i=>`<label for="tp-${t.id}-${i}">${i+1}차 기간<input id="tp-${t.id}-${i}" data-tid="${t.id}" data-tf="period" data-i="${i}" value="${esc(t.periods[i]||'')}" placeholder="예: 10/12-10/23"></label>`).join('')}
+      ${[...Array(MAXP).keys()].map(i=>`<label for="tp-${t.id}-${i}">${i+1}차 기간<input id="tp-${t.id}-${i}" data-tid="${t.id}" data-tf="period" data-i="${i}" value="${esc(t.periods[i]||'')}" placeholder="예: 10/12-10/23"></label>`).join('')}
       <label for="ts-${t.id}">순서<input id="ts-${t.id}" type="number" data-tid="${t.id}" data-tf="sort" value="${t.sort}"></label>
     </div>
     <div class="toolbar"><span class="hint">저장된 배치 <b>${t.count}건</b> · 학생 ${n}명</span><span class="spacer"></span>
@@ -552,7 +553,7 @@ function renderTerms(){
   $('#addTerm').onsubmit=async e=>{e.preventDefault();const label=$('#t-label').value.trim();
     const j=await act(()=>api('POST','/api/terms',{label,sort:$('#t-sort').value,periods:[],cohort_id:C().id}),`${label} 학기를 추가했습니다.`);if(j){S.terms=j.terms;renderTerms();renderHistory();renderPlace();}};
   el.querySelectorAll('[data-tf]').forEach(x=>x.onchange=async()=>{const id=+x.dataset.tid;const t=S.terms.find(t=>t.id===id);let d;
-    if(x.dataset.tf==='period'){const p=t.periods.slice();while(p.length<4)p.push('');p[+x.dataset.i]=x.value;d={periods:p};}else d={[x.dataset.tf]:x.value};
+    if(x.dataset.tf==='period'){const p=t.periods.slice();while(p.length<MAXP)p.push('');p[+x.dataset.i]=x.value;d={periods:p};}else d={[x.dataset.tf]:x.value};
     const j=await act(()=>api('PUT',`/api/terms/${id}`,d));if(j){S.terms=j.terms;x.classList.remove('saved');void x.offsetWidth;x.classList.add('saved');renderHistory();renderPlace();if(x.dataset.tf==='sort')renderTerms();}});
   el.querySelectorAll('[data-tclear]').forEach(b=>b.onclick=async()=>{const t=S.terms.find(t=>t.id===+b.dataset.tclear);
     if(!confirm(`${t.label}에 저장된 배치 ${t.count}건을 모두 지웁니다. 계속할까요?`))return;
