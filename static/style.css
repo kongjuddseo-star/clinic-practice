@@ -164,3 +164,8 @@ select{font:inherit;font-size:13px;border:1px solid var(--line);border-radius:5p
 @media (max-width:760px){.inst-grid{grid-template-columns:1fr 1fr}.term-grid{grid-template-columns:1fr 1fr}}
 [hidden]{display:none!important}
 .badge{white-space:nowrap}
+
+.cohortbar{display:flex;flex-wrap:wrap;gap:10px 12px;align-items:center;background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:10px 14px}
+.cohortbar select{font-weight:600}
+.cohort-desc{font-size:13px;color:var(--muted);min-width:0}
+.cohort-desc b{color:var(--ink)}

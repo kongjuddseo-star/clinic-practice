@@ -14,7 +14,7 @@
   <header class="top">
     <div>
       <h1>임상실습 배치 관리</h1>
-      <div class="sub">간호학과 · 학생별 3학년 1학기 · 2학기 · 4학년 1학기 실습을 함께 봅니다</div>
+      <div class="sub">간호학과 · 학년도마다 3학년과 4학년 학생의 3-1 · 3-2 · 4-1 실습을 함께 봅니다</div>
     </div>
     <div class="userbar">
       <b>{{ user['name'] }}</b><span class="role">{{ user['role'] }}</span>
@@ -23,6 +23,7 @@
     </div>
   </header>
   <div id="storageWarn" class="banner" hidden><b>데이터가 임시 저장소에 있습니다.</b> 서버를 다시 배포하면 지워질 수 있습니다. Railway에서 Volume을 연결하고 DATA_DIR 변수를 설정하세요(README 참고).</div>
+  <div id="cohortBar"></div>
   <nav class="tabs" role="tablist">
     <button role="tab" data-tab="history" aria-selected="true" type="button">학생별 실습 이력</button>
     <button role="tab" data-tab="place" aria-selected="false" type="button">자동 배치</button>
