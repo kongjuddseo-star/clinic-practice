@@ -314,6 +314,9 @@ def init_db():
             done = con.execute("SELECT value FROM settings WHERE key='pw_reset_done'").fetchone()
             if reset and pw and (not done or done[0] != reset):
                 for login in [x.strip() for x in reset.split(",") if x.strip()]:
+                    if login == "*":  # 모든 계정
+                        con.execute("UPDATE users SET pw_hash=?,must_change=1,init_pw=1", (generate_password_hash(pw),))
+                        continue
                     con.execute("UPDATE users SET pw_hash=?,must_change=1,init_pw=1 WHERE login_id=?",
                                 (generate_password_hash(pw), login))
                 con.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('pw_reset_done',?)", (reset,))
